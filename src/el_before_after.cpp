@@ -17,6 +17,7 @@ void litehtml::el_before_after_base::add_style(const style& style)
 
     auto children = m_children;
     m_children.clear();
+    m_child_indexes_valid = false;
 
     const auto& content_property = style.get_property(_content_);
     if(content_property.is<std::string>() && !content_property.get<std::string>().empty())
@@ -75,7 +76,8 @@ void litehtml::el_before_after_base::add_style(const style& style)
 
     if(m_children.empty())
     {
-        m_children = children;
+        m_children            = children;
+        m_child_indexes_valid = false;
     }
 }
 

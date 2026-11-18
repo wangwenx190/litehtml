@@ -33,6 +33,7 @@ litehtml::render_item::render_item(std::shared_ptr<element> _src_el) :
 
 void litehtml::render_item::update_intrinsic_size()
 {
+    src_el()->get_document()->container()->check_cancelled();
     m_intrinsic_max_size.width  = 0_px;
     m_intrinsic_max_size.height = 0_px;
     m_intrinsic_min_size.width  = 0_px;
@@ -206,10 +207,43 @@ litehtml::pixel_t litehtml::render_item::resolve_intrinsic_width(const css_lengt
     }
 }
 
-litehtml::pixel_t litehtml::render_item::render(pixel_t x, pixel_t y,
-                                                const containing_block_context& containing_block_size,
-                                                formatting_context* fmt_ctx, bool second_pass)
+litehtml::pixel_t litehtml::render_item::render(pixel_t x, pixel_t y, const containing_block_context& context,
+                                                formatting_context* fmt, bool second)
 {
+    src_el()->get_document()->container()->check_cancelled();
+    auto* checkpoint = m_flow_checkpoint.get();
+    if(checkpoint && checkpoint->valid && checkpoint->x == x && checkpoint->y == y && checkpoint->second == second &&
+       checkpoint->context->same_geometry(context))
+    {
+        m_pos     = checkpoint->pos;
+        m_margins = checkpoint->margin;
+        m_padding = checkpoint->padding;
+        m_borders = checkpoint->border;
+        src_el()->get_document()->record_flow_checkpoint();
+        return checkpoint->width;
+    }
+    auto result = render_uncached(x, y, context, fmt, second);
+    if(checkpoint)
+    {
+        checkpoint->context.emplace(context);
+        checkpoint->x       = x;
+        checkpoint->y       = y;
+        checkpoint->second  = second;
+        checkpoint->width   = result;
+        checkpoint->pos     = m_pos;
+        checkpoint->margin  = m_margins;
+        checkpoint->padding = m_padding;
+        checkpoint->border  = m_borders;
+        checkpoint->valid   = true;
+    }
+    return result;
+}
+
+litehtml::pixel_t litehtml::render_item::render_uncached(pixel_t x, pixel_t y,
+                                                         const containing_block_context& containing_block_size,
+                                                         formatting_context* fmt_ctx, bool second_pass)
+{
+    src_el()->get_document()->container()->check_cancelled();
     calc_outlines(containing_block_size.outline_width());
 
     m_pos.clear();
@@ -584,8 +618,9 @@ void litehtml::render_item::render_positioned(render_type rt)
             // 10.6.4 Absolutely positioned, non-replaced elements
             if(css_top.is_predefined() && !css_bottom.is_predefined() && el_height.is_predefined())
             {
-                // 1. 'top' and 'height' are 'auto' and 'bottom' is not 'auto', then the height is based on the
-                // content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and solve for 'top'
+                // 1. 'top' and 'height' are 'auto' and 'bottom' is not 'auto', then the height is based on
+                // the content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and
+                // solve for 'top'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -599,8 +634,9 @@ void litehtml::render_item::render_positioned(render_type rt)
                 top    = containing_block_size.height.value - height - bottom;
             } else if(css_top.is_predefined() && css_bottom.is_predefined() && !el_height.is_predefined())
             {
-                // 2. 'top' and 'bottom' are 'auto' and 'height' is not 'auto', then set 'top' to the static position,
-                // set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and solve for 'bottom'
+                // 2. 'top' and 'bottom' are 'auto' and 'height' is not 'auto', then set 'top' to the static
+                // position, set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and solve for
+                // 'bottom'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -613,9 +649,9 @@ void litehtml::render_item::render_positioned(render_type rt)
                 height = fix_height_min_max(el_height.calc_percent(containing_block_size.height));
             } else if(!css_top.is_predefined() && css_bottom.is_predefined() && el_height.is_predefined())
             {
-                // 3. 'height' and 'bottom' are 'auto' and 'top' is not 'auto', then the height is based on the
-                // content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0,
-                // and solve for 'bottom'
+                // 3. 'height' and 'bottom' are 'auto' and 'top' is not 'auto', then the height is based on
+                // the content per 10.6.7, set 'auto' values for 'margin-top' and 'margin-bottom' to 0, and
+                // solve for 'bottom'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -628,8 +664,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 top    = css_top.calc_percent(containing_block_size.height);
             } else if(css_top.is_predefined() && !css_bottom.is_predefined() && !el_height.is_predefined())
             {
-                // 4. 'top' is 'auto', 'height' and 'bottom' are not 'auto', then set 'auto' values for 'margin-top'
-                // and 'margin-bottom' to 0, and solve for 'top'
+                // 4. 'top' is 'auto', 'height' and 'bottom' are not 'auto', then set 'auto' values for
+                // 'margin-top' and 'margin-bottom' to 0, and solve for 'top'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -643,8 +679,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 top    = containing_block_size.height.value - height - bottom;
             } else if(!css_top.is_predefined() && !css_bottom.is_predefined() && el_height.is_predefined())
             {
-                // 5. 'height' is 'auto', 'top' and 'bottom' are not 'auto', then 'auto' values for 'margin-top' and
-                // 'margin-bottom' are set to 0 and solve for 'height'
+                // 5. 'height' is 'auto', 'top' and 'bottom' are not 'auto', then 'auto' values for
+                // 'margin-top' and 'margin-bottom' are set to 0 and solve for 'height'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -724,8 +760,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 }
             } else if(!css_top.is_predefined() && css_bottom.is_predefined() && !el_height.is_predefined())
             {
-                // 6. 'bottom' is 'auto', 'top' and 'height' are not 'auto', then set 'auto' values for 'margin-top'
-                // and 'margin-bottom' to 0 and solve for 'bottom'
+                // 6. 'bottom' is 'auto', 'top' and 'height' are not 'auto', then set 'auto' values for
+                // 'margin-top' and 'margin-bottom' to 0 and solve for 'bottom'
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -738,8 +774,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 top    = css_top.calc_percent(containing_block_size.height);
             } else if(css_top.is_predefined() && css_bottom.is_predefined() && el_height.is_predefined())
             {
-                // If all three of 'top', 'height', and 'bottom' are auto, set 'top' to the static position and
-                // apply rule number three.
+                // If all three of 'top', 'height', and 'bottom' are auto, set 'top' to the static position
+                // and apply rule number three.
                 if(el->css().get_margins().top.is_predefined())
                 {
                     el->m_margins.top = 0;
@@ -794,8 +830,8 @@ void litehtml::render_item::render_positioned(render_type rt)
             // 10.3.7 Absolutely positioned, non-replaced elements
             if(css_left.is_predefined() && !css_right.is_predefined() && el_width.is_predefined())
             {
-                // 1. 'left' and 'width' are 'auto' and 'right' is not 'auto', then the width is shrink-to-fit.
-                // Then solve for 'left'
+                // 1. 'left' and 'width' are 'auto' and 'right' is not 'auto', then the width is
+                // shrink-to-fit. Then solve for 'left'
                 if(el->css().get_margins().left.is_predefined())
                 {
                     el->m_margins.left = 0;
@@ -809,10 +845,10 @@ void litehtml::render_item::render_positioned(render_type rt)
                 left  = containing_block_size.width.value - width - right;
             } else if(css_left.is_predefined() && css_right.is_predefined() && !el_width.is_predefined())
             {
-                // 2. 'left' and 'right' are 'auto' and 'width' is not 'auto', then if the 'direction' property of
-                // the element establishing the static-position containing block is 'ltr' set 'left' to the
-                // static position, otherwise set 'right' to the static position. Then solve for 'left'
-                // (if 'direction is 'rtl') or 'right' (if 'direction' is 'ltr').
+                // 2. 'left' and 'right' are 'auto' and 'width' is not 'auto', then if the 'direction'
+                // property of the element establishing the static-position containing block is 'ltr' set
+                // 'left' to the static position, otherwise set 'right' to the static position. Then solve
+                // for 'left' (if 'direction is 'rtl') or 'right' (if 'direction' is 'ltr').
                 if(el->css().get_margins().left.is_predefined())
                 {
                     el->m_margins.left = 0;
@@ -825,8 +861,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 width = fix_width_min_max(el_width.calc_percent(containing_block_size.width));
             } else if(!css_left.is_predefined() && css_right.is_predefined() && el_width.is_predefined())
             {
-                // 3. 'width' and 'right' are 'auto' and 'left' is not 'auto', then the width is shrink-to-fit .
-                // Then solve for 'right'
+                // 3. 'width' and 'right' are 'auto' and 'left' is not 'auto', then the width is
+                // shrink-to-fit . Then solve for 'right'
                 if(el->css().get_margins().left.is_predefined())
                 {
                     el->m_margins.left = 0;
@@ -948,9 +984,9 @@ void litehtml::render_item::render_positioned(render_type rt)
             {
                 // If all three of 'left', 'width', and 'right' are 'auto': First set any 'auto' values for
                 // 'margin-left' and 'margin-right' to 0. Then, if the 'direction' property of the element
-                // establishing the static-position containing block is 'ltr' set 'left' to the static position
-                // and apply rule number three below; otherwise, set 'right' to the static position and apply
-                // rule number one below.
+                // establishing the static-position containing block is 'ltr' set 'left' to the static
+                // position and apply rule number three below; otherwise, set 'right' to the static position
+                // and apply rule number one below.
                 if(el->css().get_margins().left.is_predefined())
                 {
                     el->m_margins.left = 0;
@@ -973,7 +1009,8 @@ void litehtml::render_item::render_positioned(render_type rt)
                 {
                     // If both 'margin-left' and 'margin-right' are 'auto', solve the equation under the extra
                     // constraint that the two margins get equal values, unless this would make them negative,
-                    // in which case when direction of the containing block is 'ltr' ('rtl'), set 'margin-left'
+                    // in which case when direction of the containing block is 'ltr' ('rtl'), set
+                    // 'margin-left'
                     // ('margin-right') to zero and solve for 'margin-right' ('margin-left').
                     el->m_margins.left = el->m_margins.right = remained / 2_px;
                     if(el->m_margins.left < 0_px)
@@ -1137,8 +1174,8 @@ void litehtml::render_item::calc_document_size(litehtml::size& sz, pixel_t x /*=
                 }
             } else
             {
-                // All children of tables and blocks with style other than "overflow: visible" are inside element.
-                // We can skip calculating the size of children
+                // All children of tables and blocks with style other than "overflow: visible" are inside
+                // element. We can skip calculating the size of children
                 if(src_el()->css().get_overflow() == overflow_visible && src_el()->css().get_display() != display_table)
                 {
                     for(const auto& el : m_children)
@@ -1960,7 +1997,8 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
 
     ret.unclamped_render_width = ret.render_width.value;
 
-    // An auto width is already a content width, so border-box limits must exclude padding and borders.
+    // An auto width is already a content width, so border-box limits must exclude padding and
+    // borders.
     const pixel_t auto_width_sizing =
         ret.width.type == containing_block_context::cbc_value_type_auto ? box_sizing_width() : 0_px;
     const auto apply_min_width = [&]() {

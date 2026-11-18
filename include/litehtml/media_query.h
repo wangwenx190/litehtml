@@ -57,7 +57,8 @@ namespace litehtml
 
     struct media_condition;
 
-    // <media-query> = <media-condition> | [ not | only ]? <media-type> [ and <media-condition-without-or> ]?
+    // <media-query> = <media-condition> | [ not | only ]? <media-type> [ and
+    // <media-condition-without-or> ]?
     struct media_query
     {
         bool                         m_not        = true;
@@ -113,9 +114,11 @@ namespace litehtml
 
     struct media_query_list
     {
-        std::vector<media_query> m_queries;
-
-        bool empty() const
+        vector<media_query> m_queries;
+        // Unit conversion depends on host typography. Preserve the tokens so
+        // font changes can refresh conditions without reparsing stylesheets.
+        css_token_vector source_tokens;
+        bool             empty() const
         {
             return m_queries.empty();
         }
@@ -145,6 +148,13 @@ namespace litehtml
         }
 
         bool apply_media_features(const media_features& features); // returns true if the m_is_used changed
+        void refresh_units(shared_ptr<document> doc)
+        {
+            for(auto& list : m_media_query_lists)
+            {
+                list = parse_media_query_list(list.source_tokens, doc);
+            }
+        }
     };
 
 } // namespace litehtml

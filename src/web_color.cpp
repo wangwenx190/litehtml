@@ -294,7 +294,8 @@ namespace litehtml
     }
 
     // https://drafts.csswg.org/css-color-4/#rgb-functions
-    // Values outside these ranges are not invalid, but are clamped to the ranges defined here at parsed-value time.
+    // Values outside these ranges are not invalid, but are clamped to the ranges defined here at
+    // parsed-value time.
     byte calc_percent_and_clamp(const css_length& val, float max = 255)
     {
         float x = val.val();
@@ -420,7 +421,8 @@ namespace litehtml
             const auto& tok0 = list[0][0];
             float       hue;
             // <hue> = <number> | <angle>
-            // number is interpreted as a number of degrees  https://drafts.csswg.org/css-color-4/#typedef-hue
+            // number is interpreted as a number of degrees
+            // https://drafts.csswg.org/css-color-4/#typedef-hue
             if(tok0.type == NUMBER)
             {
                 hue = tok0.n.number;
@@ -443,7 +445,8 @@ namespace litehtml
                 return false;
             }
         }
-        // modern syntax:  [<hue> | none] [<percentage> | <number> | none]{2} [ / [<alpha-value> | none] ]?
+        // modern syntax:  [<hue> | none] [<percentage> | <number> | none]{2} [ / [<alpha-value> | none]
+        // ]?
         else if(!parse_modern_syntax(tok.value, true, h, s, l, a))
         {
             return false;
@@ -453,8 +456,8 @@ namespace litehtml
         // no percent calculation needed for sat and lit because 0% ~ 0, 100% ~ 100
         float sat = s.val();
         float lit = l.val();
-        // For historical reasons, if the saturation is less than 0% it is clamped to 0% at parsed-value time, before
-        // being converted to an sRGB color.
+        // For historical reasons, if the saturation is less than 0% it is clamped to 0% at parsed-value
+        // time, before being converted to an sRGB color.
         if(sat < 0)
         {
             sat = 0;
@@ -506,6 +509,11 @@ namespace litehtml
         {
             return false;
         }
+        if(tok.ident() == "-litehtml-default-color" && container)
+        {
+            color = container->default_color();
+            return true;
+        }
         if(tok.ident() == "currentcolor")
         {
             color = web_color::current_color;
@@ -526,19 +534,41 @@ namespace litehtml
         return parse_hash_color(tok, color) || parse_func_color(tok, color) || parse_name_color(tok, color, container);
     }
 
+    web_color web_color::resolved() const
+    {
+        if(!source)
+        {
+            return *this;
+        }
+        auto result  = (*source)().resolved();
+        result.alpha = alpha;
+        return result;
+    }
+
     web_color web_color::darken(double fraction) const
     {
-        int v_red   = static_cast<int>(red);
-        int v_blue  = static_cast<int>(blue);
-        int v_green = static_cast<int>(green);
-        v_red       = static_cast<int>(std::max(v_red - (v_red * fraction), 0.0));
-        v_blue      = static_cast<int>(std::max(v_blue - (v_blue * fraction), 0.0));
-        v_green     = static_cast<int>(std::max(v_green - (v_green * fraction), 0.0));
-        return {static_cast<byte>(v_red), static_cast<byte>(v_green), static_cast<byte>(v_blue), alpha};
+        if(source)
+        {
+            auto result   = *this;
+            result.source = std::make_shared<const std::function<web_color()>>(
+                [value = *this, fraction] { return value.resolved().darken(fraction); });
+            return result;
+        }
+        int v_red   = (int) red;
+        int v_blue  = (int) blue;
+        int v_green = (int) green;
+        v_red       = (int) max(v_red - (v_red * fraction), 0.0);
+        v_blue      = (int) max(v_blue - (v_blue * fraction), 0.0);
+        v_green     = (int) max(v_green - (v_green * fraction), 0.0);
+        return {(byte) v_red, (byte) v_green, (byte) v_blue, alpha};
     }
 
     std::string web_color::to_string() const
     {
+        if(source)
+        {
+            return "dynamic:" + std::to_string(reinterpret_cast<uintptr_t>(source.get())) + ":" + std::to_string(alpha);
+        }
         char str[9];
         if(alpha)
         {

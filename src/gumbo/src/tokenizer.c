@@ -2952,10 +2952,18 @@ bool gumbo_lex(GumboParser* parser, GumboToken* output) {
     return true;
   }
 
+  enum { CancellationCharacterInterval = 256 };
+  unsigned cancellation_ticks = 0;
+  bool cancelled = false;
   while (1) {
     assert(!tokenizer->_temporary_buffer_emit);
     assert(tokenizer->_buffered_emit_char == kGumboNoChar);
-    int c = utf8iterator_current(&tokenizer->_input);
+    // Feed EOF through the ordinary state machine so unfinished tag/comment
+    // allocations are released by the same paths as truncated input.
+    if (cancellation_ticks++ % CancellationCharacterInterval == 0 &&
+        parser->_options->cancelled &&
+        parser->_options->cancelled(parser->_options->userdata)) cancelled = true;
+    int c = cancelled ? -1 : utf8iterator_current(&tokenizer->_input);
     gumbo_debug(
         "Lexing character '%c' (%d) in state %d.\n", c, c, tokenizer->_state);
     StateResult result =

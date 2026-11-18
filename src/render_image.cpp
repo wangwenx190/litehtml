@@ -23,7 +23,7 @@ litehtml::pixel_t litehtml::render_item_image::_render(pixel_t x, pixel_t y,
     m_pos.width  = sz.width;
     m_pos.height = sz.height;
 
-    src_el()->css().line_height().computed_value = height();
+    src_el()->css_w().line_height().computed_value = height();
 
     const auto& width                  = css().get_width();
     const auto& height                 = css().get_height();

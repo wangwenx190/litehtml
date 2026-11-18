@@ -141,8 +141,8 @@ namespace litehtml
         for(auto& decl : decls)
         {
             remove_whitespace(decl.value);
-            // Note: decl.value is already componentized, see consume_qualified_rule and consume_style_block_contents.
-            // Note: decl.value may be empty.
+            // Note: decl.value is already componentized, see consume_qualified_rule and
+            // consume_style_block_contents. Note: decl.value may be empty.
             std::string name = decl.name.substr(0, 2) == "--" ? decl.name : lowcase(decl.name);
             add_property(_id(name), decl.value, baseurl, decl.important, container);
         }
@@ -205,7 +205,8 @@ namespace litehtml
         add_length_property(name, val, keywords, f_length_percentage | f_positive, important);
     }
 
-    // `value` is a list of component values with all whitespace tokens removed, including those inside component values
+    // `value` is a list of component values with all whitespace tokens removed, including those inside
+    // component values
     void style::add_property(string_id name, const css_token_vector& value, const std::string& baseurl, bool important,
                              document_container* container)
     {
@@ -830,7 +831,8 @@ namespace litehtml
         add_property(name, tokens, baseurl, important, container);
     }
 
-    // This should be the same as parse_bg_image, but list-style-image is currently a string (not an image).
+    // This should be the same as parse_bg_image, but list-style-image is currently a string (not an
+    // image).
     bool style::parse_list_style_image(const css_token& tok, std::string& url)
     {
         if(tok.ident() == "none")
@@ -858,9 +860,9 @@ namespace litehtml
 
         for(const auto& token : tokens)
         {
-            // "...none is a valid value for both list-style-image and list-style-type. To resolve this ambiguity,
-            // a value of none ... must be applied to whichever of the two properties aren’t otherwise set by the
-            // shorthand."
+            // "...none is a valid value for both list-style-image and list-style-type. To resolve this
+            // ambiguity, a value of none ... must be applied to whichever of the two properties aren’t
+            // otherwise set by the shorthand."
             if(token.ident() == "none")
             {
                 none_count++;
@@ -1107,8 +1109,9 @@ namespace litehtml
         return parse_1234_values(tokens, len, parse_length, options, keywords);
     }
 
-    // This function implements the logic of the kind "if two values are specified, the first one applies to
-    // top and bottom, the second one to left and right". Works in conjunction with parse_1234_values.
+    // This function implements the logic of the kind "if two values are specified, the first one
+    // applies to top and bottom, the second one to left and right". Works in conjunction with
+    // parse_1234_values.
     template <class T> void style::add_four_properties(string_id top_name, T val[4], int n, bool important)
     {
         // These always go in trbl order, see comment for "CSS property names" in string_id.
@@ -1176,8 +1179,8 @@ namespace litehtml
     }
 
     // https://drafts.csswg.org/css-backgrounds/#typedef-bg-layer
-    // <bg-layer> = <bg-image> || <bg-position> [ / <bg-size> ]? || <repeat-style> || <attachment> || <visual-box> ||
-    // <visual-box> <final-bg-layer> =  <bg-layer> || <'background-color'>
+    // <bg-layer> = <bg-image> || <bg-position> [ / <bg-size> ]? || <repeat-style> || <attachment> ||
+    // <visual-box> || <visual-box> <final-bg-layer> =  <bg-layer> || <'background-color'>
     bool style::parse_bg_layer(const css_token_vector& tokens, document_container* container, background& bg,
                                bool final_layer)
     {
@@ -1221,8 +1224,9 @@ namespace litehtml
             {
                 attachment_found = true;
             }
-            // If one <visual-box> value is present then it sets both background-origin and background-clip to that
-            // value. If two values are present, then the first sets background-origin and the second background-clip.
+            // If one <visual-box> value is present then it sets both background-origin and background-clip
+            // to that value. If two values are present, then the first sets background-origin and the
+            // second background-clip.
             else if(!origin_found && parse_keyword(tokens[i], bg.m_origin[0], background_box_strings))
             {
                 origin_found = true, bg.m_clip[0] = bg.m_origin[0];
@@ -1302,8 +1306,10 @@ namespace litehtml
     // https://drafts.csswg.org/css-backgrounds/#typedef-bg-position
     // https://www.w3.org/TR/css-values-4/#position
     // <bg-position> = [ left | center | right | top | bottom | <length-percentage> ] |
-    //   [ left | center | right | <length-percentage> ]  [ top | center | bottom | <length-percentage> ]
-    // Side-relative values (like bottom 10%) are not supported, so only 1 or 2 values are parsed (not 3 or 4).
+    //   [ left | center | right | <length-percentage> ]  [ top | center | bottom | <length-percentage>
+    //   ]
+    // Side-relative values (like bottom 10%) are not supported, so only 1 or 2 values are parsed (not 3
+    // or 4).
     bool parse_bg_position(const css_token_vector& tokens, int& index, css_length& x, css_length& y,
                            bool convert_keywords_to_percents)
     {
@@ -1338,7 +1344,8 @@ namespace litehtml
         } else // two values
         {
             // try to fix wrong order
-            // A pair of keywords can be reordered, while a combination of keyword and length or percentage cannot.
+            // A pair of keywords can be reordered, while a combination of keyword and length or percentage
+            // cannot.
             if((is_one_of_predef(a, top, bottom) && b.is_predefined()) ||
                (a.is_predefined() && is_one_of_predef(b, left, right)))
             {
@@ -1548,7 +1555,8 @@ namespace litehtml
     // <font-style> || <font-variant-css2> || <font-weight>
     // None of the allowed values intersect with <font-size>, it cannot consume <font-size>.
     // Note: <font-weight> can be a number >=1, but <font-size> inside <font> is <length-percentage>,
-    // so it can be only 0 number. <font-size> as a standalone property does allow <number>s in quirks mode.
+    // so it can be only 0 number. <font-size> as a standalone property does allow <number>s in quirks
+    // mode.
     bool parse_font_style_variant_weight(const css_token_vector& tokens, int& index, int& style, int& variant,
                                          css_length& weight)
     {
@@ -1621,7 +1629,7 @@ namespace litehtml
             if(name.size() == 1 && name[0].type == STRING)
             {
                 // result.push_back(name[0].str);
-                result += name[0].str() + ',';
+                result += name[0].get_repr() + ',';
                 continue;
             }
 
@@ -1634,7 +1642,7 @@ namespace litehtml
                 {
                     return false;
                 }
-                str += tok.name() + ' ';
+                str += tok.get_repr() + ' ';
             }
             // result.push_back(trim(str));
             result += trim(str) + ',';
@@ -1839,12 +1847,12 @@ namespace litehtml
         bool           valid = value.size() == 1 && is_one_of(value[0].ident(), "none", "initial", "unset");
         if(!valid)
         {
-            auto             slash = std::find_if(value.begin(), value.end(),
-                                                  [](const css_token& token) { return token.ch == '/'; });
+            auto slash =
+                std::find_if(value.begin(), value.end(), [](const css_token& token) { return token.ch == '/'; });
             css_token_vector first(value.begin(), slash);
             css_token_vector second(slash == value.end() ? slash : slash + 1, value.end());
-            const bool       has_area_strings = std::any_of(
-                first.begin(), first.end(), [](const css_token& token) { return token.type == STRING; });
+            const bool       has_area_strings =
+                std::any_of(first.begin(), first.end(), [](const css_token& token) { return token.type == STRING; });
             if(has_area_strings)
             {
                 css_token_vector area_tokens;
@@ -1900,8 +1908,8 @@ namespace litehtml
                     const bool has_repeat = std::any_of(second.begin(), second.end(), [](const css_token& token) {
                         return token.type == CV_FUNCTION && lowcase(token.name()) == "repeat";
                     });
-                    valid = !has_repeat && parse_grid_track_list(second, columns) && !columns.empty() &&
-                            columns.size() <= 1024;
+                    valid                 = !has_repeat && parse_grid_track_list(second, columns) && !columns.empty() &&
+                                            columns.size() <= 1024;
                 }
             } else if(slash != value.end())
             {
@@ -2011,8 +2019,8 @@ namespace litehtml
                 m_shrink = tok.n.number;
                 return true;
             }
-            // unitless_zero_allowed enforces the rule "A unitless zero that is not already preceded by two flex factors
-            // must be interpreted as a flex factor."
+            // unitless_zero_allowed enforces the rule "A unitless zero that is not already preceded by two
+            // flex factors must be interpreted as a flex factor."
             bool basis(const css_token& tok, bool unitless_zero_allowed = false)
             {
                 if(!unitless_zero_allowed && tok.type == NUMBER && pixel_t(tok.n.number) == 0_px)
@@ -2110,10 +2118,10 @@ namespace litehtml
     }
 
     // https://www.w3.org/TR/css-align/#align-self-property
-    // value = auto | normal | stretch |  [ [first | last]? && baseline ]  |  [safe | unsafe]? <self-position>
-    // <self-position> = center | start | end | self-start | self-end | flex-start | flex-end
-    // https://www.w3.org/TR/css-align/#align-items-property
-    // same as align-self, except auto is not allowed
+    // value = auto | normal | stretch |  [ [first | last]? && baseline ]  |  [safe | unsafe]?
+    // <self-position> <self-position> = center | start | end | self-start | self-end | flex-start |
+    // flex-end https://www.w3.org/TR/css-align/#align-items-property same as align-self, except auto is
+    // not allowed
     void style::parse_align_self(string_id name, const css_token_vector& tokens, bool important)
     {
         auto n = tokens.size();
@@ -2169,7 +2177,8 @@ namespace litehtml
 
     void style::add_parsed_property(string_id name, const property_value& propval)
     {
-        auto prop = m_properties.find(name);
+        m_identity = next_identity();
+        auto prop  = m_properties.find(name);
         if(prop != m_properties.end())
         {
             if(!prop->second.m_important || (propval.m_important && prop->second.m_important))
@@ -2189,6 +2198,7 @@ namespace litehtml
         {
             if(!prop->second.m_important || (important && prop->second.m_important))
             {
+                m_identity = next_identity();
                 m_properties.erase(prop);
             }
         }

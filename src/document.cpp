@@ -1,6 +1,12 @@
 #include "html.h"
 #include "document.h"
 #include "document_container.h"
+#include "stylesheet.h"
+#include "css_parser.h"
+#include "html_tag.h"
+#include "el_text.h"
+#include "el_para.h"
+#include "el_space.h"
 #include "el_anchor.h"
 #include "el_base.h"
 #include "el_body.h"
@@ -27,10 +33,128 @@
 #include "render_table.h"
 #include "stylesheet.h"
 #include "types.h"
-#include <map>
+#include <algorithm>
+#include <cstring>
 
 namespace litehtml
 {
+
+    namespace
+    {
+        // A prefix may only use declarations whose result is independent of omitted
+        // siblings and document height. Parse real CSS tokens, including escapes and
+        // comments, rather than searching raw style text for forbidden spellings.
+        bool prefix_declarations(const css_token_vector& tokens, document_container* container)
+        {
+            raw_declaration::vector declarations;
+            raw_rule::vector        nested;
+            css_parser(tokens).consume_style_block_contents(declarations, nested);
+            if(!nested.empty())
+            {
+                return false;
+            }
+            for(const auto& declaration : declarations)
+            {
+                container->check_cancelled();
+                const auto& name    = declaration.name;
+                const bool  spacing = name == "margin" || name == "margin-top" || name == "margin-right" ||
+                                      name == "margin-bottom" || name == "margin-left" || name == "padding" ||
+                                      name == "padding-top" || name == "padding-right" || name == "padding-bottom" ||
+                                      name == "padding-left";
+                const bool  text = name == "color" || name == "background-color" || name == "font" ||
+                                   name == "font-family" || name == "font-size" || name == "font-style" ||
+                                   name == "font-weight" || name == "font-variant" || name == "line-height" ||
+                                   name == "letter-spacing" || name == "word-spacing" || name == "text-align" ||
+                                   name == "text-decoration" || name == "text-decoration-line" ||
+                                   name == "text-decoration-color" || name == "text-transform" || name == "white-space";
+                if(!spacing && !text)
+                {
+                    return false;
+                }
+                // A shortened line box can let an omitted block's glyphs paint back
+                // into the prefix. Normal font metrics keep ink local to each block.
+                if(name == "line-height")
+                {
+                    auto value = declaration.value;
+                    remove_whitespace(value);
+                    if(value.size() != 1 || value.front().type != IDENT || value.front().ident() != "normal")
+                    {
+                        return false;
+                    }
+                }
+                if(name == "font" && std::any_of(declaration.value.begin(), declaration.value.end(),
+                                                 [](const css_token& token) { return token.ch == '/'; }))
+                {
+                    return false;
+                }
+                if(spacing)
+                {
+                    for(const auto& token : declaration.value)
+                    {
+                        if(token.is_component_value())
+                        {
+                            return false;
+                        }
+                        if((token.type == NUMBER || token.type == DIMENSION || token.type == PERCENTAGE) &&
+                           token.n.number < 0)
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        bool prefix_stylesheet(const string& source, document_container* container)
+        {
+            for(const auto& rule : css_parser::parse_stylesheet(source, true))
+            {
+                container->check_cancelled();
+                if(rule->type != raw_rule::qualified || !prefix_declarations(rule->block.value, container))
+                {
+                    return false;
+                }
+                for(const auto& tokens : parse_comma_separated_list(rule->prelude))
+                {
+                    auto selector = make_shared<css_selector>();
+                    if(!selector->parse(get_repr(tokens), no_quirks_mode))
+                    {
+                        continue;
+                    }
+                    for(; selector; selector = selector->m_left)
+                    {
+                        for(const auto& attribute : selector->m_right.m_attrs)
+                        {
+                            if(attribute.type == select_pseudo_element)
+                            {
+                                return false;
+                            }
+                            if(attribute.type != select_pseudo_class)
+                            {
+                                continue;
+                            }
+                            if(!attribute.selector_list.empty())
+                            {
+                                return false;
+                            }
+                            switch(attribute.name)
+                            {
+                            case _root_:
+                            case _first_child_:
+                            case _first_of_type_:
+                            case _nth_child_:
+                            case _nth_of_type_:
+                                break;
+                            default:
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+    } // namespace
 
     document::document(document_container* container)
     {
@@ -49,15 +173,287 @@ namespace litehtml
         }
     }
 
-    document::ptr document::createFromString(const estring& str, document_container* container,
-                                             const std::string& master_styles, const std::string& user_styles)
+    document::ptr document::createFromString(estring str, document_container* container, const string& master_styles,
+                                             const string&                                    user_styles,
+                                             const std::function<bool(const document::ptr&)>& first_document,
+                                             size_t initial_blocks, size_t maximum_nodes, size_t maximum_depth,
+                                             bool reuse_computed_styles, std::string_view validated_utf8,
+                                             std::string_view initial_text, int initial_occurrence)
     {
         // Create litehtml::document
-        document::ptr doc = std::make_shared<document>(container);
+        document::ptr doc        = make_shared<document>(container);
+        doc->m_user_style_text   = user_styles;
+        doc->m_master_style_text = master_styles;
+        doc->m_maximum_nodes     = maximum_nodes;
+        doc->m_maximum_depth     = maximum_depth;
 
         // Parse document into GumboOutput
-        GumboOutput* output = doc->parse_html(str);
+        const auto release_output = [](GumboOutput* value) { gumbo_destroy_output(&kGumboDefaultOptions, value); };
+        // Borrow validated UTF-8 only during this call. Gumbo's original-tag views
+        // expire after from_gumbo has copied the final elements into owning nodes.
+        const auto parse = [&] {
+            if(validated_utf8.empty())
+            {
+                return doc->parse_html(std::move(str));
+            }
+            auto options          = kGumboDefaultOptions;
+            options.userdata      = container;
+            options.maximum_nodes = maximum_nodes ? maximum_nodes + 1 : 0;
+            options.maximum_depth = maximum_depth ? maximum_depth + 1 : 0;
+            options.cancelled = [](void* context) { return static_cast<document_container*>(context)->is_cancelled(); };
+            return gumbo_parse_with_options(&options, validated_utf8.data(), validated_utf8.size());
+        };
+        std::unique_ptr<GumboOutput, decltype(release_output)> parsed(parse(), release_output);
+        container->check_cancelled();
+        GumboOutput* output = parsed.get();
 
+        // Inspect the complete parsed tree before exposing any prefix. The fast
+        // path admits independent flow with prefix-stable author CSS; dependency on
+        // omitted siblings, tables, counters or resources requires full creation.
+        if(output->limit_exceeded || !output->root)
+        {
+            return {};
+        }
+        GumboNode* body        = nullptr;
+        bool       independent = prefix_stylesheet(user_styles, container);
+        struct PendingNode
+        {
+            GumboNode* node;
+            size_t     depth;
+        };
+        std::vector<PendingNode> pending{
+            {output->root, 0}
+        };
+        size_t     nodes       = 0;
+        GumboNode* anchor_node = nullptr;
+        int        occurrence  = 0;
+        while(first_document && independent && !pending.empty())
+        {
+            container->check_cancelled();
+            const auto current = pending.back();
+            auto*      node    = current.node;
+            pending.pop_back();
+            const auto count_node = [&](const char* text) {
+                ++nodes;
+                if(!initial_text.empty() && initial_text == text && occurrence++ == initial_occurrence)
+                {
+                    anchor_node = node;
+                }
+            };
+            if(node->type == GUMBO_NODE_TEXT)
+            {
+                container->split_text(node->v.text.text, count_node, count_node);
+            } else if(node->type == GUMBO_NODE_WHITESPACE)
+            {
+                nodes += strlen(node->v.text.text);
+            } else
+            {
+                ++nodes;
+            }
+            if((maximum_nodes && nodes > maximum_nodes) || (maximum_depth && current.depth > maximum_depth))
+            {
+                independent = false;
+                break;
+            }
+            if(node->type != GUMBO_NODE_ELEMENT)
+            {
+                continue;
+            }
+            const auto& element = node->v.element;
+            switch(element.tag)
+            {
+            case GUMBO_TAG_HTML:
+            case GUMBO_TAG_HEAD:
+            case GUMBO_TAG_TITLE:
+            case GUMBO_TAG_META:
+            case GUMBO_TAG_STYLE:
+            case GUMBO_TAG_BODY:
+            case GUMBO_TAG_P:
+            case GUMBO_TAG_DIV:
+            case GUMBO_TAG_H1:
+            case GUMBO_TAG_H2:
+            case GUMBO_TAG_H3:
+            case GUMBO_TAG_H4:
+            case GUMBO_TAG_H5:
+            case GUMBO_TAG_H6:
+            case GUMBO_TAG_BLOCKQUOTE:
+            case GUMBO_TAG_PRE:
+            case GUMBO_TAG_SPAN:
+            case GUMBO_TAG_B:
+            case GUMBO_TAG_STRONG:
+            case GUMBO_TAG_I:
+            case GUMBO_TAG_EM:
+            case GUMBO_TAG_U:
+            case GUMBO_TAG_S:
+            case GUMBO_TAG_CODE:
+            case GUMBO_TAG_BR:
+                break;
+            default:
+                independent = false;
+                break;
+            }
+            if(element.tag == GUMBO_TAG_STYLE)
+            {
+                if(!node->parent || node->parent->type != GUMBO_NODE_ELEMENT ||
+                   node->parent->v.element.tag != GUMBO_TAG_HEAD)
+                {
+                    independent = false;
+                }
+                string source;
+                for(unsigned int i = 0; i < element.children.length; ++i)
+                {
+                    auto* child = static_cast<GumboNode*>(element.children.data[i]);
+                    if(child->type == GUMBO_NODE_TEXT || child->type == GUMBO_NODE_WHITESPACE)
+                    {
+                        source += child->v.text.text;
+                    }
+                }
+                independent = independent && prefix_stylesheet(source, container);
+            }
+            if(element.tag == GUMBO_TAG_BODY)
+            {
+                body = node;
+            }
+            for(unsigned int i = 0; i < element.attributes.length; ++i)
+            {
+                auto*        attribute = static_cast<GumboAttribute*>(element.attributes.data[i]);
+                const string name(attribute->name);
+                if(name == "style")
+                {
+                    independent = independent && prefix_declarations(normalize(string(attribute->value)), container);
+                } else if(name != "id" && name != "class" && name != "title" && name != "lang" && name != "dir" &&
+                          element.tag != GUMBO_TAG_META)
+                {
+                    independent = false;
+                }
+            }
+            for(unsigned int i = element.children.length; i > 0; --i)
+            {
+                pending.push_back({static_cast<GumboNode*>(element.children.data[i - 1]), current.depth + 1});
+            }
+        }
+        if(first_document && independent && body && initial_blocks > 0)
+        {
+            // Include the exact source occurrence before constructing any prefix.
+            // A middle-anchor request must not rebuild every doubling prefix.
+            if(!initial_text.empty())
+            {
+                auto* branch = anchor_node;
+                while(branch && branch->parent != body)
+                {
+                    branch = branch->parent;
+                }
+                if(branch)
+                {
+                    initial_blocks += branch->index_within_parent + 1;
+                } else
+                {
+                    initial_blocks = body->v.element.children.length;
+                }
+            }
+            auto&      children = body->v.element.children;
+            const auto total    = children.length;
+            struct RestoreLength
+            {
+                GumboVector& children;
+                unsigned int total;
+                ~RestoreLength()
+                {
+                    children.length = total;
+                }
+            } restore{children, total};
+            // Promote the exact first-screen DOM rather than creating the chapter
+            // again. Prefix-stable selectors cannot change existing cascades when
+            // later flow siblings arrive. Only new subtrees need declaration and
+            // computed-style work; rendering is rebuilt once after tail creation.
+            size_t count            = std::min(initial_blocks, size_t(total));
+            children.length         = static_cast<unsigned int>(count);
+            auto       prefix       = from_gumbo(output, container, master_styles, user_styles, reuse_computed_styles,
+                                                 maximum_nodes, maximum_depth);
+            auto       body_element = prefix->m_root ? prefix->m_root->select_one("body") : nullptr;
+            const auto extend       = [&](size_t end) {
+                children.length               = total;
+                prefix->m_maximum_nodes       = maximum_nodes;
+                constexpr size_t source_batch = 32;
+                elements_list    added;
+                auto             last_existing = body_element->children().end();
+                const bool       had_children  = !body_element->children().empty();
+                if(had_children)
+                {
+                    --last_existing;
+                }
+                while(count < end)
+                {
+                    container->check_cancelled();
+                    const auto batch_end = std::min(end, count + source_batch);
+                    added.clear();
+                    for(; count < batch_end; ++count)
+                    {
+                        prefix->create_node(children.data[count], added, true, true);
+                    }
+                    for(const auto& child : added)
+                    {
+                        body_element->appendChild(child);
+                    }
+                }
+                // Attach the complete tail before matching forward sibling selectors.
+                // Otherwise every source batch would invalidate and rebuild all
+                // sibling ordinals, making nth-child preparation quadratic.
+                {
+                    selector_scope matching(*prefix);
+                    auto           child = had_children ? std::next(last_existing) : body_element->children().begin();
+                    for(; child != body_element->children().end(); ++child)
+                    {
+                        container->check_cancelled();
+                        (*child)->apply_stylesheet(prefix->m_master_css);
+                        (*child)->parse_attributes();
+                        (*child)->apply_stylesheet(prefix->m_styles);
+                        (*child)->apply_stylesheet(prefix->m_user_css);
+                        (*child)->compute_styles();
+                    }
+                }
+                prefix->m_maximum_nodes = 0;
+                prefix->m_root_render.reset();
+                prefix->m_tabular_elements.clear();
+                prefix->m_root_render = prefix->m_root->create_render_item(nullptr);
+                prefix->fix_tables_layout();
+                if(prefix->m_root_render)
+                {
+                    prefix->m_root_render = prefix->m_root_render->init();
+                }
+            };
+            if(body_element)
+            {
+                while(count < total)
+                {
+                    container->check_cancelled();
+                    if(first_document(prefix))
+                    {
+                        extend(total);
+                        return prefix;
+                    }
+                    const auto next =
+                        std::min(size_t(total), initial_text.empty() ? count * 2 : count + initial_blocks / 16 + 8);
+                    extend(next);
+                }
+                return prefix;
+            }
+        }
+        container->check_cancelled();
+        return from_gumbo(output, container, master_styles, user_styles, reuse_computed_styles, maximum_nodes,
+                          maximum_depth);
+    }
+
+    document::ptr document::from_gumbo(GumboOutput* output, document_container* container, const string& master_styles,
+                                       const string& user_styles, bool reuse_computed_styles, size_t maximum_nodes,
+                                       size_t maximum_depth)
+    {
+        auto doc                     = make_shared<document>(container);
+        doc->m_reuse_computed_styles = reuse_computed_styles;
+        doc->m_maximum_nodes         = maximum_nodes;
+        doc->m_maximum_depth         = maximum_depth;
+        doc->m_user_style_text       = user_styles;
+        doc->m_master_style_text     = master_styles;
         // mode must be set before doc->create_node because it is used in html_tag::set_attr
         switch(output->document->v.document.doc_type_quirks_mode)
         {
@@ -80,9 +476,9 @@ namespace litehtml
         {
             root = root_elements.back();
         }
+        doc->m_maximum_nodes = 0;
 
-        // Destroy GumboOutput
-        gumbo_destroy_output(&kGumboDefaultOptions, output);
+        container->check_cancelled();
 
         doc->finalize_from_external_root(root, master_styles, user_styles);
 
@@ -105,7 +501,10 @@ namespace litehtml
         {
             return;
         }
-        m_finalized = true;
+        m_finalized         = true;
+        m_master_style_text = master_styles;
+        m_user_style_text   = user_styles;
+        selector_scope matching(*this);
 
         m_root = root;
 
@@ -250,7 +649,10 @@ namespace litehtml
         encoding_sniffing_algorithm(str);
         // cannot store output in local variable because gumbo keeps pointers into it,
         // which will be accessed later in gumbo_tag_from_original_text
-        if(str.encoding == encoding::utf_8)
+        if(str.encoding == encoding::utf_8 && str.confidence == confidence::certain)
+        {
+            m_text = std::move(static_cast<string&>(str));
+        } else if(str.encoding == encoding::utf_8)
         {
             m_text = str;
         } else
@@ -262,9 +664,18 @@ namespace litehtml
         // Instead, we parse entire file and then handle <meta> tags.
 
         // Using gumbo_parse_with_options to pass string length (m_text may contain NUL chars).
-        GumboOutput* output = gumbo_parse_with_options(&kGumboDefaultOptions, m_text.data(), m_text.size());
+        auto options          = kGumboDefaultOptions;
+        options.userdata      = m_container;
+        options.maximum_nodes = m_maximum_nodes ? m_maximum_nodes + 1 : 0;
+        options.maximum_depth = m_maximum_depth ? m_maximum_depth + 1 : 0;
+        options.cancelled     = [](void* context) { return static_cast<document_container*>(context)->is_cancelled(); };
+        GumboOutput* output   = gumbo_parse_with_options(&options, m_text.data(), m_text.size());
+        if(m_container->is_cancelled())
+        {
+            return output;
+        }
 
-        if(str.confidence == confidence::certain)
+        if(str.confidence == confidence::certain || output->limit_exceeded || !output->root)
         {
             return output;
         }
@@ -290,22 +701,32 @@ namespace litehtml
                 {
                     decode(str, new_encoding, m_text);
                 }
-                output = gumbo_parse_with_options(&kGumboDefaultOptions, m_text.data(), m_text.size());
+                output = gumbo_parse_with_options(&options, m_text.data(), m_text.size());
             }
         }
 
         return output;
     }
 
+    void document::account_node()
+    {
+        m_container->check_cancelled();
+        if(m_maximum_nodes && ++m_created_nodes > m_maximum_nodes)
+        {
+            throw rendering_cancelled{};
+        }
+    }
     void document::create_node(void* gnode, elements_list& elements, bool parseTextNode, bool process_root)
     {
-        auto* node = static_cast<GumboNode*>(gnode);
+        m_container->check_cancelled();
+        auto* node = (GumboNode*) gnode;
         switch(node->type)
         {
         case GUMBO_NODE_ELEMENT:
             {
                 if(process_root)
                 {
+                    account_node();
                     string_map      attrs;
                     GumboAttribute* attr = nullptr;
                     for(unsigned int i = 0; i < node->v.element.attributes.length; i++)
@@ -360,15 +781,18 @@ namespace litehtml
             {
                 if(!parseTextNode)
                 {
+                    account_node();
                     elements.push_back(std::make_shared<el_text>(node->v.text.text, shared_from_this()));
                 } else
                 {
                     m_container->split_text(
                         node->v.text.text,
                         [this, &elements](const char* text) {
+                            account_node();
                             elements.push_back(std::make_shared<el_text>(text, shared_from_this()));
                         },
                         [this, &elements](const char* text) {
+                            account_node();
                             elements.push_back(std::make_shared<el_space>(text, shared_from_this()));
                         });
                 }
@@ -376,6 +800,7 @@ namespace litehtml
             break;
         case GUMBO_NODE_CDATA:
             {
+                account_node();
                 element::ptr ret = std::make_shared<el_cdata>(shared_from_this());
                 ret->set_data(node->v.text.text);
                 elements.push_back(ret);
@@ -383,6 +808,7 @@ namespace litehtml
             break;
         case GUMBO_NODE_COMMENT:
             {
+                account_node();
                 element::ptr ret = std::make_shared<el_comment>(shared_from_this());
                 ret->set_data(node->v.text.text);
                 elements.push_back(ret);
@@ -393,6 +819,7 @@ namespace litehtml
                 std::string str = node->v.text.text;
                 for(size_t i = 0; i < str.length(); i++)
                 {
+                    account_node();
                     elements.push_back(std::make_shared<el_space>(str.substr(i, 1).c_str(), shared_from_this()));
                 }
             }
@@ -897,6 +1324,197 @@ namespace litehtml
         m_fixed_boxes.push_back(pos);
     }
 
+    size_t document::retained_font_bytes() const
+    {
+        size_t           bytes       = 0;
+        constexpr size_t entry_bytes = sizeof(fonts_map::value_type) + sizeof(void*) * 4;
+        for(const auto& font : m_fonts)
+        {
+            bytes += entry_bytes + font.first.capacity();
+        }
+        return bytes;
+    }
+
+    bool document::refresh_fonts(bool retain_fonts)
+    {
+        m_container->check_cancelled();
+        // Font handles include the CSS family, size and emphasis. Pure point-size
+        // changes can retain their bounded metrics/word caches for recent sizes.
+        constexpr size_t maximum_retained_font_bytes = 64 * 1024;
+        if(!retain_fonts || retained_font_bytes() > maximum_retained_font_bytes)
+        {
+            for(auto& font : m_fonts)
+            {
+                m_container->delete_font(font.second.font);
+            }
+            m_fonts.clear();
+        }
+        // A font-dependent media condition can change the cascade. Only that
+        // case needs selector matching and generated-content reconstruction.
+        for(auto& media : m_media_lists)
+        {
+            m_container->check_cancelled();
+            media->refresh_units(shared_from_this());
+        }
+        if(media_changed())
+        {
+            return true;
+        }
+        // With an unchanged cascade, font metrics cannot change renderer types or
+        // DOM membership. Keep the render tree, including its stable anchor paths.
+        m_root->compute_styles();
+        std::vector<std::shared_ptr<render_item>> pending{m_root_render};
+        while(!pending.empty())
+        {
+            m_container->check_cancelled();
+            auto node = std::move(pending.back());
+            pending.pop_back();
+            if(!node)
+            {
+                continue;
+            }
+            // Anonymous table/flow/flex boxes are absent from the source DOM.
+            // Recompute their inherited metrics after their real source ancestors.
+            if(node->src_el()->tag() == empty_id && !node->src_el()->is_text())
+            {
+                node->src_el()->compute_styles(false);
+            }
+            for(const auto& child : node->children())
+            {
+                pending.push_back(child);
+            }
+        }
+        return false;
+    }
+
+    void document::discard_render_tree()
+    {
+        m_root_render.reset();
+        m_tabular_elements.clear();
+        m_fixed_boxes.clear();
+        m_over_element = m_active_element = nullptr;
+        std::vector<element::ptr> pending{m_root};
+        while(!pending.empty())
+        {
+            auto node = std::move(pending.back());
+            pending.pop_back();
+            if(!node)
+            {
+                continue;
+            }
+            node->m_renders.clear();
+            for(const auto& child : node->m_children)
+            {
+                pending.push_back(child);
+            }
+        }
+    }
+    void document::restore_render_tree()
+    {
+        if(m_root_render || !m_root)
+        {
+            return;
+        }
+        m_container->check_cancelled();
+        m_root_render = m_root->create_render_item(nullptr);
+        fix_tables_layout();
+        if(m_root_render)
+        {
+            m_root_render = m_root_render->init();
+        }
+    }
+
+    void document::restyle(const string& master_styles, bool reset_fonts)
+    {
+        m_master_style_text = master_styles;
+        m_container->check_cancelled();
+        m_root_render.reset();
+        m_tabular_elements.clear();
+        m_fixed_boxes.clear();
+        m_over_element = m_active_element = nullptr;
+        std::vector<element::ptr> pending{m_root};
+        while(!pending.empty())
+        {
+            m_container->check_cancelled();
+            auto node = std::move(pending.back());
+            pending.pop_back();
+            if(!node)
+            {
+                continue;
+            }
+            // Generated content belongs to styles, not to the source DOM. Remove
+            // it before reapplying selectors so repeated updates stay bounded.
+            node->m_children.erase(std::remove_if(node->m_children.begin(), node->m_children.end(),
+                                                  [](const auto& child) {
+                                                      return child->tag() == __tag_before_ ||
+                                                             child->tag() == __tag_after_;
+                                                  }),
+                                   node->m_children.end());
+            node->m_child_indexes_valid = false;
+            if(node->m_auxiliary)
+            {
+                node->m_auxiliary->styles.clear();
+            }
+            node->m_renders.clear();
+            if(node->m_auxiliary)
+            {
+                node->m_auxiliary->counters.clear();
+            }
+            if(auto tag = std::dynamic_pointer_cast<html_tag>(node))
+            {
+                tag->m_style.clear();
+                tag->m_style_sources.clear();
+            }
+            for(const auto& child : node->m_children)
+            {
+                pending.push_back(child);
+            }
+        }
+        if(reset_fonts)
+        {
+            for(auto& font : m_fonts)
+            {
+                m_container->delete_font(font.second.font);
+            }
+            m_fonts.clear();
+        }
+        m_master_css = css();
+        m_styles     = css();
+        m_user_css   = css();
+        m_media_lists.clear();
+        m_css.clear();
+        auto self = shared_from_this();
+        m_master_css.parse_css_stylesheet(master_styles, "", self);
+        m_master_css.sort_selectors();
+        m_user_css.parse_css_stylesheet(m_user_style_text, "", self);
+        m_user_css.sort_selectors();
+        m_container->get_media_features(m_media);
+        m_root->apply_stylesheet(m_master_css);
+        m_root->parse_attributes();
+        for(const auto& source : m_css)
+        {
+            m_container->check_cancelled();
+            media_query_list_list::ptr media;
+            if(!source.media.empty())
+            {
+                media = make_shared<media_query_list_list>();
+                media->add(parse_media_query_list(source.media, self));
+            }
+            m_styles.parse_css_stylesheet(source.text, source.baseurl, self, media);
+        }
+        m_styles.sort_selectors();
+        update_media_lists(m_media);
+        m_root->apply_stylesheet(m_styles);
+        m_root->apply_stylesheet(m_user_css);
+        m_root->compute_styles();
+        m_root_render = m_root->create_render_item(nullptr);
+        fix_tables_layout();
+        if(m_root_render)
+        {
+            m_root_render = m_root_render->init();
+        }
+    }
+
     void document::rebuild_render_tree()
     {
         // Reuse scroll state for surviving boxes; layout will clamp it to their new sizes.
@@ -972,9 +1590,10 @@ namespace litehtml
         container()->get_media_features(m_media);
         if(update_media_lists(m_media))
         {
-            m_root->refresh_styles();
-            m_root->compute_styles();
-            rebuild_render_tree();
+            // Reapply attribute styles and generated content as well as selectors.
+            // refresh_styles() alone loses mapped table attributes and retains
+            // obsolete pseudo elements across responsive breakpoints.
+            restyle(m_master_style_text, false);
             return true;
         }
         return false;
@@ -1273,3 +1892,43 @@ namespace litehtml
     }
 
 } // namespace litehtml
+
+int litehtml::document::cached_select(const std::shared_ptr<element>& node, const css_selector& selector,
+                                      bool apply_pseudo)
+{
+    container()->check_cancelled();
+    if(!m_matching_styles)
+    {
+        return node->select(selector, apply_pseudo);
+    }
+    // Only immutable ancestor predicates enter this cache. Sibling, structural,
+    // interaction and generated-content selectors retain their full evaluator.
+    for(auto term = &selector; term; term = term->m_left.get())
+    {
+        if(term->m_left && term->m_combinator != combinator_child && term->m_combinator != combinator_descendant)
+        {
+            return node->select(selector, apply_pseudo);
+        }
+        for(const auto& attr : term->m_right.m_attrs)
+        {
+            if(attr.type == select_pseudo_class || attr.type == select_pseudo_element)
+            {
+                return node->select(selector, apply_pseudo);
+            }
+        }
+    }
+    const selector_match_key key{node.get(), &selector};
+    const auto               found = m_selector_matches.find(key);
+    if(found != m_selector_matches.end())
+    {
+        ++m_selector_hits;
+        return found->second;
+    }
+    const int        result                 = node->select(selector, apply_pseudo);
+    constexpr size_t maximum_selector_bytes = 2 * 1024 * 1024;
+    if(m_selector_matches.size() < maximum_selector_bytes / selector_entry_bytes)
+    {
+        m_selector_matches.emplace(key, result);
+    }
+    return result;
+}

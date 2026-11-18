@@ -1,3 +1,4 @@
+#include "document_container.h"
 #include "html.h"
 #include "element.h"
 #include "document.h"
@@ -87,9 +88,9 @@ namespace litehtml
         return "element";
     }
 
-    std::vector<std::tuple<std::string, std::string>> element::dump_get_attrs()
+    std::vector<std::tuple<string, string>> element::dump_get_attrs()
     {
-        return m_css.dump_get_attrs();
+        return css().dump_get_attrs();
     }
 
     void element::dump(dumper& cout)
@@ -140,34 +141,29 @@ namespace litehtml
 
     std::shared_ptr<render_item> element::create_render_item(const std::shared_ptr<render_item>& parent_ri)
     {
+        get_document()->container()->check_cancelled();
         std::shared_ptr<render_item> ret;
 
         if(is_one_of(css().get_display(), display_table_column, display_table_column_group, display_table_footer_group,
                      display_table_header_group, display_table_row_group))
         {
             ret = std::make_shared<render_item_table_part>(shared_from_this());
-
         } else if(css().get_display() == display_table_row)
         {
             ret = std::make_shared<render_item_table_row>(shared_from_this());
-
         } else if(is_one_of(css().get_display(), display_block, display_table_cell, display_table_caption,
                             display_list_item, display_inline_block))
         {
             ret = std::make_shared<render_item_block>(shared_from_this());
-
         } else if(is_one_of(css().get_display(), display_table, display_inline_table))
         {
             ret = std::make_shared<render_item_table>(shared_from_this());
-
         } else if(css().get_display() == display_inline)
         {
             ret = std::make_shared<render_item_inline>(shared_from_this());
-
         } else if(css().get_display() == display_inline_text)
         {
             ret = std::make_shared<render_text>(shared_from_this());
-
         } else if(is_one_of(css().get_display(), display_flex, display_inline_flex))
         {
             ret = std::make_shared<render_item_flex>(shared_from_this());
@@ -196,7 +192,11 @@ namespace litehtml
 
     bool element::requires_styles_update()
     {
-        for(const auto& used_style : m_used_styles)
+        if(!m_auxiliary)
+        {
+            return false;
+        }
+        for(const auto& used_style : m_auxiliary->styles)
         {
             if(used_style->m_selector->is_media_valid())
             {
@@ -298,8 +298,50 @@ namespace litehtml
         return ret;
     }
 
+    // Unfiltered structural selectors share one linear sibling pass. The source
+    // tree owns these ordinal values; all child mutations invalidate its parent.
+    bool element::is_source_element() const
+    {
+        const auto name = tag();
+        return name != empty_id && name != __tag_before_ && name != __tag_after_;
+    }
+
+    void element::index_children() const
+    {
+        if(m_child_indexes_valid)
+        {
+            return;
+        }
+        std::map<string_id, int> types;
+        int                      count = 0;
+        const auto               doc   = get_document();
+        doc->record_sibling_index();
+        for(const auto& child : m_children)
+        {
+            doc->container()->check_cancelled();
+            child->m_sibling_position = {};
+            if(child->is_source_element())
+            {
+                child->m_sibling_position.forward      = ++count;
+                child->m_sibling_position.type_forward = ++types[child->tag()];
+            }
+        }
+        for(const auto& child : m_children)
+        {
+            doc->container()->check_cancelled();
+            auto& position = child->m_sibling_position;
+            if(position.forward)
+            {
+                position.backward      = count - position.forward + 1;
+                position.type_backward = types[child->tag()] - position.type_forward + 1;
+            }
+        }
+        m_child_indexes_valid = true;
+    }
+
     element::ptr element::_add_before_after(int type, const style& /*style*/)
     {
+        m_child_indexes_valid = false;
         element::ptr el;
         if(type == 0)
         {
@@ -316,7 +358,7 @@ namespace litehtml
 
     bool element::is_block_formatting_context() const
     {
-        if(m_css.get_display() == display_block)
+        if(css().get_display() == display_block)
         {
             auto par = layout_parent();
             if(par && is_one_of(par->css().get_display(), display_inline_flex, display_flex, display_grid,
@@ -325,12 +367,11 @@ namespace litehtml
                 return true;
             }
         }
-        if(m_css.get_display() == display_inline_block || m_css.get_display() == display_table_cell ||
-           m_css.get_display() == display_inline_flex || m_css.get_display() == display_flex ||
-           m_css.get_display() == display_grid || m_css.get_display() == display_inline_grid ||
-           m_css.get_display() == display_table_caption || is_root() || m_css.get_float() != float_none ||
-           m_css.get_position() == element_position_absolute || m_css.get_position() == element_position_fixed ||
-           m_css.get_overflow() > overflow_visible)
+        if(css().get_display() == display_inline_block || css().get_display() == display_table_cell ||
+           css().get_display() == display_inline_flex || css().get_display() == display_flex ||
+           css().get_display() == display_table_caption || is_root() || css().get_float() != float_none ||
+           css().get_position() == element_position_absolute || css().get_position() == element_position_fixed ||
+           css().get_overflow() > overflow_visible)
         {
             return true;
         }
@@ -361,8 +402,8 @@ namespace litehtml
             element::ptr current = shared_from_this();
             while(current != nullptr)
             {
-                auto map_iterator = current->m_counter_values.find(counter_name_id);
-                if(map_iterator != current->m_counter_values.end())
+                auto map_iterator = current->read_counters().find(counter_name_id);
+                if(map_iterator != current->read_counters().end())
                 {
                     values.push_back(std::to_string(map_iterator->second));
                 }
@@ -371,7 +412,7 @@ namespace litehtml
             if(values.empty())
             {
                 // if no counter is found, instance one with value '0'
-                shared_from_this()->m_counter_values[counter_name_id] = 0;
+                shared_from_this()->counter_values()[counter_name_id] = 0;
                 result                                                = "0";
             } else
             {
@@ -388,10 +429,13 @@ namespace litehtml
 
         while(current != nullptr)
         {
-            map_iterator = current->m_counter_values.find(counter_name_id);
-            if(map_iterator != current->m_counter_values.end())
+            if(current->m_auxiliary)
             {
-                return true;
+                map_iterator = current->counter_values().find(counter_name_id);
+                if(map_iterator != current->counter_values().end())
+                {
+                    return true;
+                }
             }
 
             // on each level, search previous siblings too
@@ -399,10 +443,13 @@ namespace litehtml
             std::reverse(siblings.begin(), siblings.end());
             for(const element::ptr& sibling : siblings)
             {
-                map_iterator = sibling->m_counter_values.find(counter_name_id);
-                if(map_iterator != sibling->m_counter_values.end())
+                if(sibling->m_auxiliary)
                 {
-                    return true;
+                    map_iterator = sibling->counter_values().find(counter_name_id);
+                    if(map_iterator != sibling->counter_values().end())
+                    {
+                        return true;
+                    }
                 }
             }
             current = current->parent();
@@ -457,13 +504,13 @@ namespace litehtml
         } else
         {
             // if counter is not found, initialize one on this element
-            m_counter_values[counter_name_id] = increment;
+            counter_values()[counter_name_id] = increment;
         }
     }
 
     void litehtml::element::reset_counter(const string_id& counter_name_id, int value)
     {
-        m_counter_values[counter_name_id] = value;
+        counter_values()[counter_name_id] = value;
     }
 
     pixel_t litehtml::element::v_scroll(pixel_t dy) const

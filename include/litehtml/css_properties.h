@@ -123,9 +123,56 @@ namespace litehtml
         void      snap_border_width(css_length& width, const std::shared_ptr<document>& doc);
 
       public:
-        void compute(const html_tag* el, const std::shared_ptr<document>& doc);
+        size_t retained_bytes() const;
+        css_properties() :
+            m_el_position(element_position_static),
+            m_text_align(text_align_left),
+            m_overflow(overflow_visible),
+            m_white_space(white_space_normal),
+            m_display(display_inline),
+            m_visibility(visibility_visible),
+            m_appearance(appearance_none),
+            m_box_sizing(box_sizing_content_box),
+            m_z_index(0),
+            m_vertical_align(va_baseline),
+            m_float(float_none),
+            m_clear(clear_none),
+            m_css_margins(),
+            m_css_padding(),
+            m_css_borders(),
+            m_css_width(),
+            m_css_height(),
+            m_css_min_width(),
+            m_css_min_height(),
+            m_css_max_width(),
+            m_css_max_height(),
+            m_css_offsets(),
+            m_css_text_indent(),
+            m_css_line_height(0),
+            m_list_style_type(list_style_type_none),
+            m_list_style_position(list_style_position_outside),
+            m_bg(),
+            m_font(0),
+            m_font_size(0),
+            m_font_metrics(),
+            m_text_transform(text_transform_none),
+            m_border_collapse(border_collapse_separate),
+            m_css_border_spacing_x(),
+            m_css_border_spacing_y(),
+            m_flex_grow(0),
+            m_flex_shrink(1),
+            m_flex_direction(flex_direction_row),
+            m_flex_wrap(flex_wrap_nowrap),
+            m_flex_justify_content(flex_justify_content_flex_start),
+            m_flex_align_items(flex_align_items_stretch),
+            m_flex_align_self(flex_align_items_auto),
+            m_flex_align_content(flex_align_content_stretch),
+            m_order(0)
+        {
+        }
 
-        std::vector<std::tuple<std::string, std::string>> dump_get_attrs();
+        void                                    compute(const html_tag* el, const std::shared_ptr<document>& doc);
+        std::vector<std::tuple<string, string>> dump_get_attrs() const;
 
         element_position get_position() const;
         void             set_position(element_position mElPosition);

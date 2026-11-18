@@ -79,6 +79,14 @@ namespace litehtml
         {
         }
 
+        estring(std::string&& str, litehtml::encoding encoding = encoding::null,
+                litehtml::confidence confidence = confidence::certain) :
+            std::string(std::move(str)),
+            encoding(encoding),
+            confidence(confidence)
+        {
+        }
+
         estring(const char* str) :
             std::string(str),
             encoding(encoding::null),

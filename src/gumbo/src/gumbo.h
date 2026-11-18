@@ -628,6 +628,10 @@ typedef struct GumboInternalOptions {
    * Default: GUMBO_NAMESPACE_HTML
    */
   GumboNamespaceEnum fragment_namespace;
+  /** Optional cooperative stop callback; partial trees remain destroyable. */
+  bool (*cancelled)(void* userdata);
+  size_t maximum_nodes;
+  size_t maximum_depth;
 } GumboOptions;
 
 /** Default options struct; use this with gumbo_parse_with_options. */
@@ -635,6 +639,7 @@ extern const GumboOptions kGumboDefaultOptions;
 
 /** The output struct containing the results of the parse. */
 typedef struct GumboInternalOutput {
+  bool limit_exceeded;
   /**
    * Pointer to the document node.  This is a GumboNode of type NODE_DOCUMENT
    * that contains the entire document as its child.

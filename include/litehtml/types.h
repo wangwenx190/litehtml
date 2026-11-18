@@ -16,6 +16,16 @@
 
 namespace litehtml
 {
+    using std::abs;
+    using std::make_shared;
+    using std::max;
+    using std::min;
+    using std::optional;
+    using std::shared_ptr;
+    using std::string;
+    using std::swap;
+    using std::vector;
+
     using uint_ptr = uintptr_t;
 
     class document;
@@ -384,9 +394,21 @@ namespace litehtml
             typed_pixel& operator=(const typed_pixel& v) = default;
         };
 
+        bool same_geometry(const containing_block_context& other) const
+        {
+            const auto same = [](const typed_pixel& a, const typed_pixel& b) {
+                return a.value == b.value && a.type == b.type;
+            };
+            return same(width, other.width) && same(render_width, other.render_width) &&
+                   same(min_width, other.min_width) && same(max_width, other.max_width) && same(height, other.height) &&
+                   same(min_height, other.min_height) && same(max_height, other.max_height) &&
+                   same(quirks_height, other.quirks_height) && unclamped_render_width == other.unclamped_render_width &&
+                   outline_percentage_width == other.outline_percentage_width && context_idx == other.context_idx &&
+                   size_mode == other.size_mode;
+        }
         typed_pixel width                  = {0_px, cbc_value_type_auto}; // width of the containing block
         typed_pixel render_width           = {0_px, cbc_value_type_auto};
-        pixel_t     unclamped_render_width = 0_px; // render_width before min/max-width are applied
+        pixel_t     unclamped_render_width = 0_px;
         typed_pixel min_width              = {0_px, cbc_value_type_none};
         typed_pixel max_width              = {0_px, cbc_value_type_none};
 
@@ -624,24 +646,25 @@ namespace litehtml
     struct media_features
     {
         media_type type;
-        pixel_t    width; // (pixels) For continuous media, this is the width of the viewport including the size of a
-                          // rendered scroll bar (if any). For paged media, this is the width of the page box.
-        pixel_t height; // (pixels) The height of the targeted display area of the output device. For continuous media,
-                        // this is the height of the viewport including the size of a rendered scroll bar (if any). For
-                        // paged media, this is the height of the page box.
-        pixel_t
-            device_width; // (pixels) The width of the rendering surface of the output device. For continuous media,
-                          // this is the width of the screen. For paged media, this is the width of the page sheet size.
-        pixel_t device_height; // (pixels) The height of the rendering surface of the output device. For continuous
-                               // media, this is the height of the screen. For paged media, this is the height of the
-                               // page sheet size.
-        int color; // The number of bits per color component of the output device. If the device is not a color device,
-                   // the value is zero.
-        int color_index; // The number of entries in the color lookup table of the output device. If the device does not
-                         // use a color lookup table, the value is zero.
-        int monochrome;  // The number of bits per pixel in a monochrome frame buffer. If the device is not a monochrome
-                         // device, the output device value will be 0.
-        pixel_t resolution; // The resolution of the output device (in DPI)
+        pixel_t    width;      // (pixels) For continuous media, this is the width of the viewport including the
+                               // size of a rendered scroll bar (if any). For paged media, this is the width of
+                               // the page box.
+        pixel_t height;        // (pixels) The height of the targeted display area of the output device. For
+                               // continuous media, this is the height of the viewport including the size of a
+                               // rendered scroll bar (if any). For paged media, this is the height of the page box.
+        pixel_t device_width;  // (pixels) The width of the rendering surface of the output device. For
+                               // continuous media, this is the width of the screen. For paged media, this
+                               // is the width of the page sheet size.
+        pixel_t device_height; // (pixels) The height of the rendering surface of the output device. For
+                               // continuous media, this is the height of the screen. For paged media,
+                               // this is the height of the page sheet size.
+        int color;             // The number of bits per color component of the output device. If the device is not a
+                               // color device, the value is zero.
+        int color_index;       // The number of entries in the color lookup table of the output device. If the
+                               // device does not use a color lookup table, the value is zero.
+        int monochrome;        // The number of bits per pixel in a monochrome frame buffer. If the device is not
+                               // a monochrome device, the output device value will be 0.
+        pixel_t resolution;    // The resolution of the output device (in DPI)
 
         media_features()
         {

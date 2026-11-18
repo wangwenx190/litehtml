@@ -32,22 +32,76 @@ namespace litehtml
         std::weak_ptr<element>                m_parent;
         std::weak_ptr<document>               m_doc;
         elements_list                         m_children;
-        css_properties                        m_css;
+        std::shared_ptr<css_properties>       m_css;
         std::list<std::weak_ptr<render_item>> m_renders;
-        used_selector::vector                 m_used_styles;
+        // Text words do not carry selector lists, counters or child styles.
+        // Allocate these element-only services together on first use.
+        struct auxiliary_state
+        {
+            used_selector::vector           styles;
+            std::map<string_id, int>        counters;
+            std::shared_ptr<css_properties> child_style;
+        };
+        std::unique_ptr<auxiliary_state> m_auxiliary;
+        auxiliary_state&                 auxiliary()
+        {
+            if(!m_auxiliary)
+            {
+                m_auxiliary = std::make_unique<auxiliary_state>();
+            }
+            return *m_auxiliary;
+        }
+        used_selector::vector& used_styles()
+        {
+            return auxiliary().styles;
+        }
+        std::map<string_id, int>& counter_values()
+        {
+            return auxiliary().counters;
+        }
+        const std::map<string_id, int>& read_counters() const
+        {
+            static const std::map<string_id, int> empty;
+            return m_auxiliary ? m_auxiliary->counters : empty;
+        }
+
+        struct sibling_position
+        {
+            int forward       = 0;
+            int backward      = 0;
+            int type_forward  = 0;
+            int type_backward = 0;
+        };
+        mutable sibling_position m_sibling_position;
+        mutable bool             m_child_indexes_valid = false;
+        void                     index_children() const;
+        bool                     is_source_element() const;
 
         virtual void select_all(const css_selector& selector, elements_list& res);
         element::ptr _add_before_after(int type, const style& style);
 
       private:
-        std::map<string_id, int> m_counter_values;
-
       public:
         explicit element(const std::shared_ptr<document>& doc);
         virtual ~element() = default;
 
-        const css_properties& css() const;
-        css_properties&       css();
+        const css_properties&           css() const;
+        css_properties&                 css_w();
+        std::shared_ptr<css_properties> text_child_style() const
+        {
+            return m_auxiliary ? m_auxiliary->child_style : nullptr;
+        }
+        void text_child_style(std::shared_ptr<css_properties> value)
+        {
+            auxiliary().child_style = std::move(value);
+        }
+        void clear_text_child_style()
+        {
+            if(m_auxiliary)
+            {
+                m_auxiliary->child_style.reset();
+            }
+        }
 
         bool     in_normal_flow() const;
         bool     is_inline() const;     // returns true if element is inline
@@ -66,7 +120,8 @@ namespace litehtml
         element::ptr parent() const;
         element::ptr layout_parent() const;
         void         parent(const element::ptr& par);
-        // returns true for elements inside a table (but outside cells) that don't participate in table rendering
+        // returns true for elements inside a table (but outside cells) that don't participate in table
+        // rendering
         bool is_table_skip() const;
 
         std::shared_ptr<document>                  get_document() const;
@@ -176,7 +231,8 @@ namespace litehtml
     };
 
     //////////////////////////////////////////////////////////////////////////
-    //							INLINE FUNCTIONS							//
+    //							INLINE FUNCTIONS
+    ////
     //////////////////////////////////////////////////////////////////////////
 
     inline bool litehtml::element::in_normal_flow() const
@@ -237,12 +293,27 @@ namespace litehtml
 
     inline const css_properties& element::css() const
     {
-        return m_css;
+        if(m_css)
+        {
+            return *m_css;
+        }
+        static const css_properties initial;
+        return initial;
     }
 
-    inline css_properties& element::css()
+    inline css_properties& element::css_w()
     {
-        return m_css;
+        // Computed cascades are shared until layout needs an element-local
+        // adjustment (for example a table column width or replaced height).
+        clear_text_child_style();
+        if(!m_css)
+        {
+            m_css = std::make_shared<css_properties>();
+        } else if(m_css.use_count() != 1)
+        {
+            m_css = std::make_shared<css_properties>(*m_css);
+        }
+        return *m_css;
     }
 
     inline bool element::is_block_box() const

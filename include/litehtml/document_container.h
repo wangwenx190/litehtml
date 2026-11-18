@@ -12,6 +12,10 @@
 
 namespace litehtml
 {
+    // Cooperative cancellation unwinds C++ layout through owning RAII objects.
+    struct rendering_cancelled
+    {
+    };
     struct list_marker
     {
         std::string     image;
@@ -33,6 +37,22 @@ namespace litehtml
     class document_container
     {
       public:
+        // Host-owned default ink stays symbolic through inheritance/currentColor.
+        virtual web_color default_color() const
+        {
+            return web_color::black;
+        }
+        virtual bool is_cancelled() const
+        {
+            return false;
+        }
+        void check_cancelled() const
+        {
+            if(is_cancelled())
+            {
+                throw rendering_cancelled{};
+            }
+        }
         virtual litehtml::uint_ptr create_font(const font_description& descr, const document* doc,
                                                litehtml::font_metrics* fm)                                          = 0;
         virtual void               delete_font(litehtml::uint_ptr hFont)                                            = 0;

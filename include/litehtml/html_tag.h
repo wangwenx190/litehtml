@@ -14,6 +14,7 @@ namespace litehtml
 
     class html_tag : public element
     {
+        friend class document;
         friend class elements_iterator;
         friend class el_table;
         friend class table_grid;
@@ -23,13 +24,15 @@ namespace litehtml
         using ptr = std::shared_ptr<html_tag>;
 
       protected:
-        string_id              m_tag = empty_id;
-        string_id              m_id  = empty_id;
-        string_vector          m_str_classes;
-        std::vector<string_id> m_classes;
-        style                  m_style;
-        string_map             m_attrs;
-        std::vector<string_id> m_pseudo_classes;
+        string_id                  m_tag = empty_id;
+        string_id                  m_id  = empty_id;
+        string_vector              m_str_classes;
+        std::vector<string_id>     m_classes;
+        style                      m_style;
+        std::vector<std::uint64_t> m_style_sources;
+        std::uint64_t              m_computed_identity = 0;
+        string_map                 m_attrs;
+        std::vector<string_id>     m_pseudo_classes;
 
         void select_all(const css_selector& selector, elements_list& res) override;
 

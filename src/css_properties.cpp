@@ -10,6 +10,24 @@
 #define offset(member) offsetof(litehtml::css_properties, member)
 // #define offset(func)	[](const css_properties& css) { return css.func; }
 
+size_t litehtml::css_properties::retained_bytes() const
+{
+    size_t     bytes        = sizeof(*this) + m_list_style_image.capacity() + m_list_style_image_baseurl.capacity() +
+                              m_font_family.capacity() + m_text_emphasis_style.capacity() + m_cursor.capacity() +
+                              m_content.capacity() + m_bg.m_baseurl.capacity();
+    const auto vector_bytes = [](const auto& values) {
+        return values.capacity() * sizeof(typename std::decay_t<decltype(values)>::value_type);
+    };
+    bytes += vector_bytes(m_bg.m_image) + vector_bytes(m_bg.m_attachment) + vector_bytes(m_bg.m_position_x) +
+             vector_bytes(m_bg.m_position_y) + vector_bytes(m_bg.m_size) + vector_bytes(m_bg.m_repeat) +
+             vector_bytes(m_bg.m_clip) + vector_bytes(m_bg.m_origin);
+    for(const auto& image : m_bg.m_image)
+    {
+        bytes += image.url.capacity() + vector_bytes(image.m_gradient.m_colors);
+    }
+    return bytes;
+}
+
 void litehtml::css_properties::compute(const html_tag* el, const document::ptr& doc)
 {
     m_color = el->get_property<web_color>(_color_, true, web_color::black, offset(m_color));
@@ -53,15 +71,17 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     // https://www.w3.org/TR/CSS22/visuren.html#dis-pos-flo
     if(m_display == display_none)
     {
-        // 1. If 'display' has the value 'none', then 'position' and 'float' do not apply. In this case, the element
+        // 1. If 'display' has the value 'none', then 'position' and 'float' do not apply. In this case,
+        // the element
         //    generates no box.
         m_float = float_none;
     } else
     {
-        // 2. Otherwise, if 'position' has the value 'absolute' or 'fixed', the box is absolutely positioned,
+        // 2. Otherwise, if 'position' has the value 'absolute' or 'fixed', the box is absolutely
+        // positioned,
         //    the computed value of 'float' is 'none', and display is set according to the table below.
-        //    The position of the box will be determined by the 'top', 'right', 'bottom' and 'left' properties
-        //    and the box's containing block.
+        //    The position of the box will be determined by the 'top', 'right', 'bottom' and 'left'
+        //    properties and the box's containing block.
         if(m_el_position == element_position_absolute || m_el_position == element_position_fixed)
         {
             m_float = float_none;
@@ -85,7 +105,8 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
             }
         } else if(m_float != float_none)
         {
-            // 3. Otherwise, if 'float' has a value other than 'none', the box is floated and 'display' is set
+            // 3. Otherwise, if 'float' has a value other than 'none', the box is floated and 'display' is
+            // set
             //    according to the table below.
             if(m_display == display_inline_table)
             {
@@ -100,9 +121,10 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
             }
         } else if(el->is_root())
         {
-            // 4. Otherwise, if the element is the root element, 'display' is set according to the table below,
-            //    except that it is undefined in CSS 2.2 whether a specified value of 'list-item' becomes a
-            //    computed value of 'block' or 'list-item'.
+            // 4. Otherwise, if the element is the root element, 'display' is set according to the table
+            // below,
+            //    except that it is undefined in CSS 2.2 whether a specified value of 'list-item' becomes
+            //    a computed value of 'block' or 'list-item'.
             if(m_display == display_inline_table)
             {
                 m_display = display_table;
@@ -343,7 +365,8 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     compute_grid(el, doc);
 }
 
-// used for all color properties except `color` (color:currentcolor is converted to color:inherit during parsing)
+// used for all color properties except `color` (color:currentcolor is converted to color:inherit
+// during parsing)
 litehtml::web_color litehtml::css_properties::get_color_property(const html_tag* el, string_id name, bool inherited,
                                                                  web_color default_value, uint_ptr member_offset) const
 {
@@ -786,7 +809,7 @@ void litehtml::css_properties::snap_border_width(css_length& width, const std::s
     width.set_value(px.value(), css_units_px);
 }
 
-std::vector<std::tuple<std::string, std::string>> litehtml::css_properties::dump_get_attrs()
+std::vector<std::tuple<litehtml::string, litehtml::string>> litehtml::css_properties::dump_get_attrs() const
 {
     std::vector<std::tuple<std::string, std::string>> ret;
 

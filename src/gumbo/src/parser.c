@@ -100,7 +100,7 @@ static void* malloc_wrapper(void* unused, size_t size) { return malloc(size); }
 static void free_wrapper(void* unused, void* ptr) { free(ptr); }
 
 const GumboOptions kGumboDefaultOptions = {&malloc_wrapper, &free_wrapper, NULL,
-    8, false, -1, GUMBO_TAG_LAST, GUMBO_NAMESPACE_HTML};
+    8, false, -1, GUMBO_TAG_LAST, GUMBO_NAMESPACE_HTML, NULL, 0, 0};
 
 static const GumboStringPiece kDoctypeHtml = GUMBO_STRING("html");
 static const GumboStringPiece kPublicIdHtml4_0 =
@@ -484,6 +484,7 @@ static void set_frameset_not_ok(GumboParser* parser) {
 }
 
 static GumboNode* create_node(GumboParser* parser, GumboNodeType type) {
+  ++parser->_allocated_nodes;
   GumboNode* node = gumbo_parser_allocate(parser, sizeof(GumboNode));
   node->parent = NULL;
   node->index_within_parent = -1;
@@ -510,6 +511,7 @@ static GumboNode* new_document_node(GumboParser* parser) {
 
 static void output_init(GumboParser* parser) {
   GumboOutput* output = gumbo_parser_allocate(parser, sizeof(GumboOutput));
+  output->limit_exceeded = false;
   output->root = NULL;
   output->document = new_document_node(parser);
   parser->_output = output;
@@ -1460,6 +1462,7 @@ static bool is_open_element(GumboParser* parser, const GumboNode* node) {
 GumboNode* clone_node(
     GumboParser* parser, GumboNode* node, GumboParseFlags reason) {
   assert(node->type == GUMBO_NODE_ELEMENT || node->type == GUMBO_NODE_TEMPLATE);
+  ++parser->_allocated_nodes;
   GumboNode* new_node = gumbo_parser_allocate(parser, sizeof(GumboNode));
   *new_node = *node;
   new_node->parent = NULL;
@@ -4422,6 +4425,7 @@ GumboOutput* gumbo_parse_with_options(
     const GumboOptions* options, const char* buffer, size_t length) {
   GumboParser parser;
   parser._options = options;
+  parser._allocated_nodes = 0;
   output_init(&parser);
   gumbo_tokenizer_state_init(&parser, buffer, length);
   parser_state_init(&parser);
@@ -4436,6 +4440,7 @@ GumboOutput* gumbo_parse_with_options(
 
   // Sanity check so that infinite loops die with an assertion failure instead
   // of hanging the process before we ever get an error.
+  enum { CancellationTokenInterval = 64 };
   int loop_count = 0;
 
   GumboToken token;
@@ -4494,11 +4499,18 @@ GumboOutput* gumbo_parse_with_options(
       }
     }
 
+    if ((options->maximum_nodes && parser._allocated_nodes > options->maximum_nodes) ||
+        (options->maximum_depth && state->_open_elements.length > options->maximum_depth)) {
+      parser._output->limit_exceeded = true;
+      break;
+    }
     ++loop_count;
     assert(loop_count < 1000000000);
 
   } while ((token.type != GUMBO_TOKEN_EOF || state->_reprocess_current_token) &&
-           !(options->stop_on_first_error && has_error));
+           !(options->stop_on_first_error && has_error) &&
+           !(loop_count % CancellationTokenInterval == 0 && options->cancelled &&
+             options->cancelled(options->userdata)));
 
   finish_parsing(&parser);
   // For API uniformity reasons, if the doctype still has nulls, convert them to

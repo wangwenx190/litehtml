@@ -38,6 +38,7 @@ namespace litehtml
         {
             el->parent(shared_from_this());
             m_children.push_back(el);
+            m_child_indexes_valid = false;
             return true;
         }
         return false;
@@ -49,6 +50,7 @@ namespace litehtml
         {
             el->parent(nullptr);
             m_children.erase(std::remove(m_children.begin(), m_children.end(), el), m_children.end());
+            m_child_indexes_valid = false;
             return true;
         }
         return false;
@@ -62,6 +64,7 @@ namespace litehtml
             el->parent(nullptr);
         }
         m_children.clear();
+        m_child_indexes_valid = false;
     }
 
     string_id html_tag::id() const
@@ -82,13 +85,18 @@ namespace litehtml
     void html_tag::set_tagName(const char* tag)
     {
         m_tag = _id(lowcase(tag));
+        if(const auto owner = parent())
+        {
+            owner->m_child_indexes_valid = false;
+        }
     }
 
     void html_tag::set_attr(const char* _name, const char* _val)
     {
         if(_name && _val)
         {
-            // attribute names in attribute selector are matched ASCII case-insensitively regardless of document mode
+            // attribute names in attribute selector are matched ASCII case-insensitively regardless of
+            // document mode
             std::string name = lowcase(_name);
             // m_attrs has all attribute values, including class and id, in their original case
             // because in attribute selector values are matched case-sensitively even in quirks mode
@@ -205,14 +213,20 @@ namespace litehtml
 
     void litehtml::html_tag::apply_stylesheet(const litehtml::css& stylesheet)
     {
-        for(const auto& sel : stylesheet.selectors())
+        document::selector_scope matching(*get_document());
+        if(stylesheet.selectors().empty())
         {
+            return;
+        }
+        get_document()->container()->check_cancelled();
+        stylesheet.for_each_candidate(m_tag, m_id, m_classes, [&](const css_selector::ptr& sel) {
+            get_document()->container()->check_cancelled();
             // optimization
             {
                 const auto& r = sel->m_right;
                 if(r.m_tag != star_id && r.m_tag != m_tag)
                 {
-                    continue;
+                    return;
                 }
 
                 if(!r.m_attrs.empty())
@@ -220,12 +234,12 @@ namespace litehtml
                     const auto& attr = r.m_attrs[0];
                     if(attr.type == select_class && !(attr.name in m_classes))
                     {
-                        continue;
+                        return;
                     }
                 }
             }
 
-            uint32_t apply = select(*sel, false);
+            int apply = select(*sel, false);
 
             if(apply != select_no_match)
             {
@@ -235,8 +249,7 @@ namespace litehtml
                 {
                     auto apply_before_after = [&]() {
                         const auto& content_property = sel->m_style->get_property(_content_);
-                        bool        content_none =
-                            content_property.is<std::string>() && content_property.get<std::string>() == "none";
+                        bool content_none = content_property.is<string>() && content_property.get<string>() == "none";
                         bool create =
                             !content_none && (sel->m_right.m_attrs.size() > 1 || sel->m_right.m_tag != star_id);
 
@@ -292,9 +305,9 @@ namespace litehtml
                         us->m_used = true;
                     }
                 }
-                m_used_styles.push_back(std::move(us));
+                used_styles().push_back(std::move(us));
             }
-        }
+        });
 
         for(auto& el : m_children)
         {
@@ -308,7 +321,7 @@ namespace litehtml
     void litehtml::html_tag::get_content_size(size& sz, pixel_t max_width)
     {
         sz.height = 0;
-        if(m_css.get_display() == display_block)
+        if(css().get_display() == display_block)
         {
             sz.width = max_width;
         } else
@@ -326,17 +339,17 @@ namespace litehtml
 
         draw_background(hdc, x, y, clip, ri);
 
-        if(m_css.get_display() == display_list_item &&
-           (m_css.get_list_style_type() != list_style_type_none || m_css.get_list_style_image() != ""))
+        if(css().get_display() == display_list_item &&
+           (css().get_list_style_type() != list_style_type_none || css().get_list_style_image() != ""))
         {
-            if(m_css.get_overflow() > overflow_visible)
+            if(css().get_overflow() > overflow_visible)
             {
                 position border_box  = pos;
                 border_box          += ri->get_paddings();
                 border_box          += ri->get_borders();
 
                 border_radiuses bdr_radius =
-                    m_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
+                    css().get_borders().radius.calc_percents(border_box.width, border_box.height);
 
                 bdr_radius -= ri->get_borders();
                 bdr_radius -= ri->get_paddings();
@@ -346,7 +359,7 @@ namespace litehtml
 
             draw_list_marker(hdc, pos, ri);
 
-            if(m_css.get_overflow() > overflow_visible)
+            if(css().get_overflow() > overflow_visible)
             {
                 get_document()->container()->del_clip();
             }
@@ -371,6 +384,8 @@ namespace litehtml
 
     void litehtml::html_tag::compute_styles(bool recursive)
     {
+        clear_text_child_style();
+        get_document()->container()->check_cancelled();
         const char*   style = get_attr("style");
         document::ptr doc   = get_document();
 
@@ -381,7 +396,77 @@ namespace litehtml
 
         m_style.subst_vars(this);
 
-        m_css.compute(this, doc);
+        // A pass-local cache shares computed values across equal cascades and
+        // inherited contexts. Match selectors and parse mapped attributes normally;
+        // only the pure computed-value work is reused. Raw attributes also cover
+        // inline styles and inherited custom properties before substitution.
+        if(!parent())
+        {
+            doc->m_computed_styles.clear();
+            doc->m_computed_sequence = 0;
+            doc->m_computed_charge   = 0;
+        }
+        constexpr size_t maximum_computed_key_bytes = 4096;
+        string           key;
+        bool             bounded_key = true;
+        const auto       append      = [&](const auto& value) {
+            if(key.size() + sizeof(value) <= maximum_computed_key_bytes)
+            {
+                key.append(reinterpret_cast<const char*>(&value), sizeof(value));
+            } else
+            {
+                bounded_key = false;
+            }
+        };
+        const auto parent_tag = std::dynamic_pointer_cast<html_tag>(parent());
+        append(m_tag);
+        append(parent_tag ? parent_tag->m_computed_identity : std::uint64_t(0));
+        append(m_style_sources.size());
+        for(auto stamp : m_style_sources)
+        {
+            append(stamp);
+        }
+        for(const auto& attribute : m_attrs)
+        {
+            // Selector results already identify the cascade. These source-only
+            // attributes never map to computed properties, so unique anchors and
+            // accessible titles must not fragment identical computed styles.
+            if(attribute.first == "id" || attribute.first == "class" || attribute.first == "title")
+            {
+                continue;
+            }
+            if(attribute.first.size() + attribute.second.size() >
+               maximum_computed_key_bytes - key.size() -
+                   std::min(maximum_computed_key_bytes - key.size(), sizeof(size_t) * 2))
+            {
+                bounded_key = false;
+                break;
+            }
+            append(attribute.first.size());
+            key += attribute.first;
+            append(attribute.second.size());
+            key += attribute.second;
+        }
+        constexpr size_t maximum_computed_bytes = 2 * 1024 * 1024;
+        const bool       cacheable              = doc->m_reuse_computed_styles && bounded_key;
+        const auto       found = cacheable ? doc->m_computed_styles.find(key) : doc->m_computed_styles.end();
+        if(found != doc->m_computed_styles.end())
+        {
+            m_css               = found->second.value;
+            m_computed_identity = found->second.identity;
+            ++doc->m_computed_hits;
+        } else
+        {
+            m_css = std::make_shared<css_properties>();
+            m_css->compute(this, doc);
+            m_computed_identity = ++doc->m_computed_sequence;
+            const auto charge   = css().retained_bytes() + key.size() + sizeof(document::computed_style);
+            if(cacheable && charge <= maximum_computed_bytes - doc->m_computed_charge)
+            {
+                doc->m_computed_charge += charge;
+                doc->m_computed_styles.emplace(std::move(key), document::computed_style{m_css, m_computed_identity});
+            }
+        }
 
         if(recursive)
         {
@@ -448,7 +533,7 @@ namespace litehtml
                 break;
             case combinator_child:
                 {
-                    int res = el_parent->select(*selector.m_left, apply_pseudo);
+                    int res = get_document()->cached_select(el_parent, *selector.m_left, apply_pseudo);
                     if(res == select_no_match)
                     {
                         return select_no_match;
@@ -854,7 +939,8 @@ namespace litehtml
             }
             break;
 
-        // Attribute value is either equals sel.value or begins with sel.value immediately followed by "-".
+        // Attribute value is either equals sel.value or begins with sel.value immediately followed by
+        // "-".
         case attribute_starts_with_string_hyphen: // |=
             // Note: no special treatment for sel.value == ""
             if(attr_value == sel.value || match(attr_value, 0, sel.value + '-'))
@@ -880,7 +966,7 @@ namespace litehtml
         {
             return nullptr;
         }
-        int res = el_parent->select(selector, apply_pseudo);
+        int res = get_document()->cached_select(el_parent, selector, apply_pseudo);
         if(res != select_no_match)
         {
             if(is_pseudo)
@@ -900,6 +986,7 @@ namespace litehtml
 
     void litehtml::html_tag::parse_attributes()
     {
+        get_document()->container()->check_cancelled();
         for(auto& el : m_children)
         {
             el->parse_attributes();
@@ -910,6 +997,7 @@ namespace litehtml
     {
         for(auto& el : m_children)
         {
+            get_document()->container()->check_cancelled();
             el->get_text(text);
         }
     }
@@ -1040,30 +1128,30 @@ namespace litehtml
                 // set left borders radius for the first box
                 if(first)
                 {
-                    bdr.radius.bottom_left_x = m_css.get_borders().radius.bottom_left_x;
-                    bdr.radius.bottom_left_y = m_css.get_borders().radius.bottom_left_y;
-                    bdr.radius.top_left_x    = m_css.get_borders().radius.top_left_x;
-                    bdr.radius.top_left_y    = m_css.get_borders().radius.top_left_y;
+                    bdr.radius.bottom_left_x = css().get_borders().radius.bottom_left_x;
+                    bdr.radius.bottom_left_y = css().get_borders().radius.bottom_left_y;
+                    bdr.radius.top_left_x    = css().get_borders().radius.top_left_x;
+                    bdr.radius.top_left_y    = css().get_borders().radius.top_left_y;
                 }
 
                 // set right borders radius for the last box
                 if(last)
                 {
-                    bdr.radius.bottom_right_x = m_css.get_borders().radius.bottom_right_x;
-                    bdr.radius.bottom_right_y = m_css.get_borders().radius.bottom_right_y;
-                    bdr.radius.top_right_x    = m_css.get_borders().radius.top_right_x;
-                    bdr.radius.top_right_y    = m_css.get_borders().radius.top_right_y;
+                    bdr.radius.bottom_right_x = css().get_borders().radius.bottom_right_x;
+                    bdr.radius.bottom_right_y = css().get_borders().radius.bottom_right_y;
+                    bdr.radius.top_right_x    = css().get_borders().radius.top_right_x;
+                    bdr.radius.top_right_y    = css().get_borders().radius.top_right_y;
                 }
 
-                bdr.top    = m_css.get_borders().top;
-                bdr.bottom = m_css.get_borders().bottom;
+                bdr.top    = css().get_borders().top;
+                bdr.bottom = css().get_borders().bottom;
                 if(first)
                 {
-                    bdr.left = m_css.get_borders().left;
+                    bdr.left = css().get_borders().left;
                 }
                 if(last)
                 {
-                    bdr.right = m_css.get_borders().right;
+                    bdr.right = css().get_borders().right;
                 }
 
                 if(bg)
@@ -1141,11 +1229,11 @@ namespace litehtml
                     }
                 }
 
-                borders bdr = m_css.get_borders();
+                borders bdr = css().get_borders();
                 if(bdr.is_visible())
                 {
                     border_box.round();
-                    bdr.radius = m_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
+                    bdr.radius = css().get_borders().radius.calc_percents(border_box.width, border_box.height);
                     get_document()->container()->draw_borders(hdc, bdr, border_box, is_root());
                 }
             }
@@ -1273,9 +1361,9 @@ namespace litehtml
             lm.pos.height = img_size.height;
         }
 
-        if(m_css.get_list_style_position() == list_style_position_outside)
+        if(css().get_list_style_position() == list_style_position_outside)
         {
-            if(m_css.get_list_style_type() >= list_style_type_armenian)
+            if(css().get_list_style_type() >= list_style_type_armenian)
             {
                 if(lm.font)
                 {
@@ -1292,7 +1380,7 @@ namespace litehtml
             }
         }
 
-        if(m_css.get_list_style_type() >= list_style_type_armenian)
+        if(css().get_list_style_type() >= list_style_type_armenian)
         {
             auto marker_text = get_list_marker_text(lm.index);
             if(marker_text.empty())
@@ -1319,7 +1407,7 @@ namespace litehtml
 
     std::string litehtml::html_tag::get_list_marker_text(int index)
     {
-        switch(m_css.get_list_style_type())
+        switch(css().get_list_style_type())
         {
         case litehtml::list_style_type_decimal:
             return std::to_string(index);
@@ -1365,10 +1453,22 @@ namespace litehtml
     bool html_tag::is_nth_child(const element::ptr& el, int num, int off, bool of_type,
                                 const css_selector::vector& selector_list) const
     {
+        if(selector_list.empty())
+        {
+            if(el->parent().get() != this)
+            {
+                return false;
+            }
+            index_children();
+            const int  idx        = of_type ? el->m_sibling_position.type_forward : el->m_sibling_position.forward;
+            const auto difference = static_cast<long long>(idx) - off;
+            return idx > 0 && (num ? difference * num >= 0 && difference % num == 0 : idx == off);
+        }
+
         int idx = 1;
         for(const auto& child : m_children)
         {
-            if(child->css().get_display() != display_inline_text)
+            if(child->is_source_element())
             {
                 if((!of_type && selector_list.empty()) || (of_type && child->tag() == el->tag()) ||
                    child->select(selector_list))
@@ -1381,7 +1481,6 @@ namespace litehtml
                             {
                                 return true;
                             }
-
                         } else if(idx == off)
                         {
                             return true;
@@ -1402,10 +1501,22 @@ namespace litehtml
     bool html_tag::is_nth_last_child(const element::ptr& el, int num, int off, bool of_type,
                                      const css_selector::vector& selector_list) const
     {
+        if(selector_list.empty())
+        {
+            if(el->parent().get() != this)
+            {
+                return false;
+            }
+            index_children();
+            const int  idx        = of_type ? el->m_sibling_position.type_backward : el->m_sibling_position.backward;
+            const auto difference = static_cast<long long>(idx) - off;
+            return idx > 0 && (num ? difference * num >= 0 && difference % num == 0 : idx == off);
+        }
+
         int idx = 1;
         for(auto child = m_children.rbegin(); child != m_children.rend(); child++)
         {
-            if((*child)->css().get_display() != display_inline_text)
+            if((*child)->is_source_element())
             {
                 if((!of_type && selector_list.empty()) || (of_type && (*child)->tag() == el->tag()) ||
                    (*child)->select(selector_list))
@@ -1418,7 +1529,6 @@ namespace litehtml
                             {
                                 return true;
                             }
-
                         } else if(idx == off)
                         {
                             return true;
@@ -1511,22 +1621,14 @@ namespace litehtml
 
     bool litehtml::html_tag::is_only_child(const element::ptr& el, bool of_type) const
     {
-        int child_count = 0;
-        for(const auto& child : m_children)
+        if(el->parent().get() != this)
         {
-            if(child->css().get_display() != display_inline_text)
-            {
-                if(!of_type || (of_type && el->tag() == child->tag()))
-                {
-                    child_count++;
-                }
-                if(child_count > 1)
-                {
-                    break;
-                }
-            }
+            return false;
         }
-        return child_count <= 1;
+        index_children();
+        const auto& position = el->m_sibling_position;
+        return of_type ? position.type_forward == 1 && position.type_backward == 1
+                       : position.forward == 1 && position.backward == 1;
     }
 
     litehtml::element::ptr litehtml::html_tag::get_element_before(const style& style, bool create)
@@ -1582,12 +1684,14 @@ namespace litehtml
 
     void litehtml::html_tag::add_style(const style& style)
     {
+        m_style_sources.push_back(style.identity());
         m_style.combine(style);
         handle_counter_properties();
     }
 
     void litehtml::html_tag::refresh_styles()
     {
+        document::selector_scope matching(*get_document());
         for(auto& el : m_children)
         {
             if(el->css().get_display() != display_inline_text)
@@ -1597,8 +1701,9 @@ namespace litehtml
         }
 
         m_style.clear();
+        m_style_sources.clear();
 
-        for(auto& usel : m_used_styles)
+        for(auto& usel : used_styles())
         {
             usel->m_used = false;
 
@@ -1661,14 +1766,14 @@ namespace litehtml
         if(own_only)
         {
             // return own background with check for empty one
-            if(m_css.get_bg().is_empty())
+            if(css().get_bg().is_empty())
             {
                 return nullptr;
             }
-            return &m_css.get_bg();
+            return &css().get_bg();
         }
 
-        if(m_css.get_bg().is_empty())
+        if(css().get_bg().is_empty())
         {
             // if this is root element (<html>) try to get background from body
             if(is_root())
@@ -1698,7 +1803,7 @@ namespace litehtml
             }
         }
 
-        return &m_css.get_bg();
+        return &css().get_bg();
     }
 
     std::string html_tag::dump_get_name()

@@ -22,6 +22,7 @@ bool litehtml::el_style::appendChild(const ptr& el)
     if(el && el->is_text())
     {
         m_children.push_back(el);
+        m_child_indexes_valid = false;
         return true;
     }
     return false;
@@ -29,7 +30,7 @@ bool litehtml::el_style::appendChild(const ptr& el)
 
 void litehtml::el_style::compute_styles(bool /* recursive */)
 {
-    css().set_display(display_none);
+    css_w().set_display(display_none);
 }
 
 litehtml::string_id litehtml::el_style::tag() const

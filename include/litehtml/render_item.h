@@ -57,7 +57,24 @@ namespace litehtml
             return 0_px;
         }
 
+        struct flow_checkpoint
+        {
+            std::optional<containing_block_context> context;
+            pixel_t                                 x = 0, y = 0;
+            bool                                    second = false, valid = false;
+            pixel_t                                 width;
+            position                                pos;
+            margins                                 margin, padding, border;
+        };
+        std::unique_ptr<flow_checkpoint> m_flow_checkpoint;
+        pixel_t render_uncached(pixel_t x, pixel_t y, const containing_block_context& context, formatting_context* fmt,
+                                bool second);
+
       public:
+        void flow_checkpoint_enabled(bool enabled)
+        {
+            m_flow_checkpoint = enabled ? std::make_unique<flow_checkpoint>() : nullptr;
+        }
         explicit render_item(std::shared_ptr<element> src_el);
 
         virtual ~render_item() = default;
@@ -96,7 +113,7 @@ namespace litehtml
             return m_intrinsic_content_height;
         }
 
-        void update_intrinsic_size();
+        void    update_intrinsic_size();
         pixel_t resolve_intrinsic_width(const css_length& value, pixel_t available_width) const;
 
         pixel_t h_scroll(pixel_t dx)
@@ -551,8 +568,8 @@ namespace litehtml
 
         /**
          * @brief Call func for all inline boxes
-         * @param process function to call for boxes. "first "argument is true for the first box, "last" argument is
-         * true for the last box. Function should return true to continue.
+         * @param process function to call for boxes. "first "argument is true for the first box, "last"
+         * argument is true for the last box. Function should return true to continue.
          * @return returns true if supported, else returns false
          */
         virtual bool for_inline_boxes(

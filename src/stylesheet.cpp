@@ -149,6 +149,10 @@ namespace litehtml
         // to its grammar or context, it's a parse error. Discard that rule.
         for(const auto& rule : rules)
         {
+            if(doc)
+            {
+                doc->container()->check_cancelled();
+            }
             if(rule->type == raw_rule::qualified)
             {
                 if(parse_style_rule(rule, baseurl, doc, media))
@@ -281,8 +285,8 @@ namespace litehtml
     bool css::parse_style_rule(const raw_rule::ptr& rule, const std::string& baseurl,
                                const std::shared_ptr<document>& doc, const media_query_list_list::ptr& media)
     {
-        // The prelude of the qualified rule is parsed as a <selector-list>. If this returns failure, the entire style
-        // rule is invalid.
+        // The prelude of the qualified rule is parsed as a <selector-list>. If this returns failure, the
+        // entire style rule is invalid.
         auto list = parse_selector_list(rule->prelude, strict_mode, doc->mode());
         if(list.empty())
         {
@@ -308,6 +312,35 @@ namespace litehtml
     {
         std::sort(m_selectors.begin(), m_selectors.end(),
                   [](const css_selector::ptr& v1, const css_selector::ptr& v2) { return (*v1) < (*v2); });
+        m_tag_candidates.clear();
+        m_id_candidates.clear();
+        m_class_candidates.clear();
+        m_universal_candidates.clear();
+        for(size_t rank = 0; rank < m_selectors.size(); ++rank)
+        {
+            const auto& right     = m_selectors[rank]->m_right;
+            auto        mandatory = std::find_if(right.m_attrs.begin(), right.m_attrs.end(),
+                                                 [](const auto& attr) { return attr.type == select_id; });
+            if(mandatory != right.m_attrs.end())
+            {
+                m_id_candidates[mandatory->name].push_back(rank);
+            } else
+            {
+                mandatory = std::find_if(right.m_attrs.begin(), right.m_attrs.end(),
+                                         [](const auto& attr) { return attr.type == select_class; });
+                if(mandatory != right.m_attrs.end())
+                {
+                    m_class_candidates[mandatory->name].push_back(rank);
+                } else if(right.m_tag == star_id)
+                {
+                    m_universal_candidates.push_back(rank);
+                } else
+                {
+                    m_tag_candidates[right.m_tag].push_back(rank);
+                }
+            }
+        }
+        m_candidates_ready = true;
     }
 
 } // namespace litehtml

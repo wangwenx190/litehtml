@@ -3,6 +3,8 @@
 
 #include "css_tokenizer.h"
 #include "types.h"
+#include <functional>
+#include <memory>
 
 namespace litehtml
 {
@@ -10,11 +12,13 @@ namespace litehtml
 
     struct web_color
     {
-        byte red              = 0;
-        byte green            = 0;
-        byte blue             = 0;
-        byte alpha            = 255;
-        bool is_current_color = false;
+        byte                                              red              = 0;
+        byte                                              green            = 0;
+        byte                                              blue             = 0;
+        byte                                              alpha            = 255;
+        bool                                              is_current_color = false;
+        std::shared_ptr<const std::function<web_color()>> source;
+        web_color                                         resolved() const;
 
         static const web_color transparent;
         static const web_color black;
@@ -36,7 +40,8 @@ namespace litehtml
 
         bool operator==(web_color color) const
         {
-            return red == color.red && green == color.green && blue == color.blue && alpha == color.alpha;
+            return red == color.red && green == color.green && blue == color.blue && alpha == color.alpha &&
+                   source == color.source;
         }
         bool operator!=(web_color color) const
         {

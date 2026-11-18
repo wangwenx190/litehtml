@@ -19,6 +19,7 @@
 
 #ifndef GUMBO_PARSER_H_
 #define GUMBO_PARSER_H_
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,7 @@ struct GumboInternalTokenizerState;
 // library, OOP-style.  This gives each function access to the options and
 // output, along with any internal state needed for the parse.
 typedef struct GumboInternalParser {
+  size_t _allocated_nodes;
   // Settings for this parse run.
   const struct GumboInternalOptions* _options;
 

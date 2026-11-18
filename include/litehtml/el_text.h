@@ -9,11 +9,17 @@ namespace litehtml
     class el_text : public element
     {
       protected:
-        std::string m_text;
-        std::string m_transformed_text;
-        size        m_size;
-        bool        m_use_transformed;
-        bool        m_draw_spaces;
+        string                  m_text;
+        std::unique_ptr<string> m_transformed_text;
+        const char*             m_literal_text = nullptr;
+        const char*             display_text() const
+        {
+            return m_literal_text ? m_literal_text : m_transformed_text ? m_transformed_text->c_str() : m_text.c_str();
+        }
+        size m_size;
+
+        bool m_draw_spaces;
+        bool m_measured = false;
 
       public:
         el_text(const char* text, const document::ptr& doc);

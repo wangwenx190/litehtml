@@ -2,6 +2,8 @@
 #define LITEHTML_STYLE_H
 
 #include "background.h"
+#include <atomic>
+#include <cstdint>
 #include "css_length.h"
 #include "css_grid.h"
 #include "css_position.h"
@@ -48,13 +50,25 @@ namespace litehtml
         using vector = std::vector<style::ptr>;
 
       private:
+        // Value copies share a stamp until a declaration changes. Source
+        // stamps identify the exact cascade, including generated pseudo styles.
+        static std::uint64_t next_identity()
+        {
+            static std::atomic<std::uint64_t> sequence{1};
+            return sequence.fetch_add(1, std::memory_order_relaxed);
+        }
+        std::uint64_t                          m_identity = next_identity();
         props_map                              m_properties;
         static std::map<string_id, css_values> m_valid_values;
 
       public:
-        void add(const css_token_vector& tokens, const std::string& baseurl = "",
-                 document_container* container = nullptr);
-        void add(const std::string& txt, const std::string& baseurl = "", document_container* container = nullptr);
+        std::uint64_t identity() const
+        {
+            return m_identity;
+        }
+
+        void add(const std::string& text, const std::string& baseurl = "", document_container* container = nullptr);
+        void add(const css_token_vector& tokens, const string& baseurl = "", document_container* container = nullptr);
 
         void add_property(string_id name, const css_token_vector& tokens, const std::string& baseurl = "",
                           bool important = false, document_container* container = nullptr);
@@ -71,6 +85,7 @@ namespace litehtml
         void combine(const style& src);
         void clear()
         {
+            m_identity = next_identity();
             m_properties.clear();
         }
 

@@ -72,12 +72,13 @@ namespace litehtml
         case _orientation_:
             return compare(feat.height >= feat.width ? _portrait_ : _landscape_);
         case _aspect_ratio_:
-            // The standard calls 1/0 "a degenerate ratio" https://drafts.csswg.org/css-values-4/#ratio-value,
-            // but it doesn't specify exactly how it behaves in this context:
-            // https://drafts.csswg.org/mediaqueries-5/#aspect-ratio. Chrome/Firefox work as expected with 1/0, for
-            // example when both width and height are nonzero (aspect-ratio < 1/0) evaluates to true. But they behave
-            // the same for 0/0, which is unexpected (0/0 is NaN, so any comparisons should evaluate to false). 0/1 is
-            // also degenerate according to the standard.
+            // The standard calls 1/0 "a degenerate ratio"
+            // https://drafts.csswg.org/css-values-4/#ratio-value, but it doesn't specify exactly how it
+            // behaves in this context: https://drafts.csswg.org/mediaqueries-5/#aspect-ratio.
+            // Chrome/Firefox work as expected with 1/0, for example when both width and height are nonzero
+            // (aspect-ratio < 1/0) evaluates to true. But they behave the same for 0/0, which is unexpected
+            // (0/0 is NaN, so any comparisons should evaluate to false). 0/1 is also degenerate according
+            // to the standard.
             return feat.height != 0_px ? compare(static_cast<float>(feat.width) / feat.height.value()) : false;
         case _device_aspect_ratio_:
             return feat.device_height != 0_px
@@ -158,7 +159,8 @@ namespace litehtml
     {
         trilean result;
         // https://drafts.csswg.org/mediaqueries/#media-types
-        // User agents must recognize the following media types as valid, but must make them match nothing.
+        // User agents must recognize the following media types as valid, but must make them match
+        // nothing.
         if(m_media_type >= media_type_first_deprecated)
         {
             result = False;
@@ -212,8 +214,8 @@ namespace litehtml
         }
 
         // https://drafts.csswg.org/mediaqueries/#evaluating
-        // If the result ... is used in any context that expects a two-valued boolean, “unknown” must be converted to
-        // “false”.
+        // If the result ... is used in any context that expects a two-valued boolean, “unknown” must be
+        // converted to “false”.
         return result == True;
     }
 
@@ -253,7 +255,8 @@ namespace litehtml
         }
 
         media_query_list result;
-        auto             list_of_lists = parse_comma_separated_list(tokens);
+        result.source_tokens = _tokens;
+        auto list_of_lists   = parse_comma_separated_list(tokens);
         for(const auto& list : list_of_lists)
         {
             media_query query;
@@ -273,7 +276,8 @@ namespace litehtml
     bool parse_media_condition(const css_token_vector& tokens, int& index, bool or_allowed, media_condition& condition,
                                const std::shared_ptr<document>& doc);
 
-    // <media-query> = <media-condition> | [ not | only ]? <media-type> [ and <media-condition-without-or> ]?
+    // <media-query> = <media-condition> | [ not | only ]? <media-type> [ and
+    // <media-condition-without-or> ]?
     bool parse_media_query(const css_token_vector& tokens, media_query& mquery, const std::shared_ptr<document>& doc)
     {
         if(tokens.empty())
@@ -435,21 +439,21 @@ namespace litehtml
 
     // https://drafts.csswg.org/mediaqueries/#mq-ranges
     // Every media feature defines its “type” as either “range” or “discrete” in its definition table.
-    // The only significant difference between the two types is that “range” media features can be evaluated in a range
-    // context and accept “min-” and “max-” prefixes on their name.
+    // The only significant difference between the two types is that “range” media features can be
+    // evaluated in a range context and accept “min-” and “max-” prefixes on their name.
 
     // https://drafts.csswg.org/mediaqueries/#mq-min-max
-    // “Discrete” type properties do not accept “min-” or “max-” prefixes. Adding such a prefix to a “discrete” type
-    // media feature simply results in an unknown feature name. For example, (min-grid: 1) is invalid, because grid is a
-    // “discrete” media feature, and so doesn’t accept the prefixes. (Even though the grid media feature appears to be
-    // numeric, as it accepts the values 0 and 1.)
+    // “Discrete” type properties do not accept “min-” or “max-” prefixes. Adding such a prefix to a
+    // “discrete” type media feature simply results in an unknown feature name. For example, (min-grid:
+    // 1) is invalid, because grid is a “discrete” media feature, and so doesn’t accept the prefixes.
+    // (Even though the grid media feature appears to be numeric, as it accepts the values 0 and 1.)
 
     struct mf_info
     {
         string_id              type       = empty_id; // range, discrete
         string_id              value_type = empty_id; // length, ratio, resolution, integer, keyword
-        std::vector<string_id> keywords =
-            {}; // default value is specified here to get rid of gcc warning "missing initializer for member"
+        std::vector<string_id> keywords   = {};       // default value is specified here to get rid of gcc warning
+                                                      // "missing initializer for member"
 
         operator bool() const
         {
@@ -548,8 +552,8 @@ namespace litehtml
                     return false;
                 }
                 // dppx is the canonical unit, but we convert to dpi instead to match
-                // document_container::get_media_features "Note that due to the 1:96 fixed ratio of CSS in to CSS px,
-                // 1dppx is equivalent to 96dpi."
+                // document_container::get_media_features "Note that due to the 1:96 fixed ratio of CSS in to
+                // CSS px, 1dppx is equivalent to 96dpi."
                 if(unit == "dppx" || unit == "x")
                 {
                     val[0].n.number *= 96;
@@ -568,7 +572,8 @@ namespace litehtml
             // Note: <resolution> doesn't allow unitless zero
             return false;
 
-        case _ratio_: // https://drafts.csswg.org/css-values-4/#ratio  <ratio> = <number [0,∞]> [ / <number [0,∞]> ]?
+        case _ratio_: // https://drafts.csswg.org/css-values-4/#ratio  <ratio> = <number [0,∞]> [ /
+                      // <number [0,∞]> ]?
             if(val[0].type == NUMBER && val[0].n.number >= 0 &&
                ((val[1].type == NUMBER && val[1].n.number >= 0) || val[1].type == 0))
             {
@@ -606,8 +611,8 @@ namespace litehtml
         // https://drafts.csswg.org/mediaqueries/#mq-boolean-context
         if(syntax == _boolean_) // (name)
         {
-            // Attempting to evaluate a min/max prefixed media feature in a boolean context is invalid and a syntax
-            // error.
+            // Attempting to evaluate a min/max prefixed media feature in a boolean context is invalid and a
+            // syntax error.
             auto mf_info = at(supported_media_features, name);
             if(!mf_info)
             {
